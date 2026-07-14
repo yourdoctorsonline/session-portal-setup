@@ -1,0 +1,407 @@
+#!/usr/bin/env python3
+"""Session Launcher — web dashboard.
+
+A graphical portal that replicates the iOS app in the browser: session cards
+(tap to open the terminal), launch a new Claude session with a folder + account
+picker, and a file browser/editor. Runs ON the Mac, so no SSH keys — it drives
+tmux and the filesystem locally.
+
+Security: binds to the Tailscale IP only (tailnet-only, WireGuard-encrypted),
+HTTP Basic auth, subprocess with list-args (no shell injection), 512 KB read
+cap. Terminals are served by ttyd on :7681 (this app 302-redirects to it).
+"""
+import base64, html, json, os, socket, subprocess, sys, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HOME = os.path.expanduser("~")
+LAUNCH = f"{HOME}/.claude-launcher/bin/launch-claude-session.sh"
+PORT = 8090
+TTYD_PORT = 7681
+MAX_READ = 512_000
+SEP = "\x1f"
+
+def tailnet_ip():
+    for p in ("/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale", "/usr/bin/tailscale", "tailscale"):
+        try:
+            out = subprocess.run([p, "ip", "-4"], capture_output=True, text=True, timeout=8)
+            ip = out.stdout.strip().splitlines()[0].strip()
+            if ip:
+                return ip
+        except Exception:
+            continue
+    return "127.0.0.1"
+
+def load_env(key, path=None):
+    if path is None:
+        path = f"{HOME}/.claude-launcher/portal.env"
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith(key + "="):
+                    return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return None
+
+TSIP = tailnet_ip()
+# No basic-auth: the portal is reachable only within the owner's private,
+# single-user tailnet (each teammate runs their own Tailscale account), so
+# tailnet membership already equals "is the owner." A password would guard
+# against a second person on the network — which this topology never has.
+PW = None
+TMUX = None
+for p in ("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"):
+    if os.path.exists(p):
+        TMUX = p
+        break
+TMUX = TMUX or "tmux"
+
+def workspace_roots():
+    ws = load_env("WORKSPACE_ROOT")
+    if ws and os.path.isdir(ws):
+        return [ws, HOME]
+    elif os.path.isdir(os.path.join(HOME, "repos")):
+        return [os.path.join(HOME, "repos"), HOME]
+    else:
+        return [HOME]
+
+# ---- data helpers ------------------------------------------------------------
+
+def list_sessions():
+    fmt = SEP.join(["#{session_name}", "#{?session_attached,1,0}", "#{session_windows}"])
+    try:
+        out = subprocess.run([TMUX, "list-sessions", "-F", fmt],
+                             capture_output=True, text=True, timeout=8).stdout
+    except Exception:
+        return []
+    rows = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split(SEP)
+        if len(parts) < 3:
+            continue
+        name, att, wins = parts[0], parts[1] == "1", parts[2]
+        rows.append({"name": name, "attached": att, "windows": wins,
+                     "claude": "claude" in name.lower()})
+    return rows
+
+def available_accounts():
+    """Accounts offered in the launch sheet — auto-detected, not hardcoded.
+    "default" (the plain ~/.claude login) is always first; every ~/.claude-<name>
+    config dir that a teammate has logged into shows up automatically. This is
+    how a per-person setup works: log in an account once and it just appears."""
+    accts = ["default"]
+    skip = {"launcher", "swap-backup"}
+    try:
+        for nm in sorted(os.listdir(HOME)):
+            if nm.startswith(".claude-") and os.path.isdir(os.path.join(HOME, nm)):
+                sub = nm[len(".claude-"):]
+                if sub and sub not in skip and not sub.startswith("swap-backup"):
+                    accts.append(sub)
+    except Exception:
+        pass
+    return accts
+
+def launch_session(name, account, perm, cwd):
+    name = (name or "").strip() or None
+    account = account if account in available_accounts() else "default"
+    perm = perm if perm in ("bypass", "auto") else "auto"
+    env = dict(os.environ)
+    env["LAUNCH_CWD"] = cwd if cwd and os.path.isdir(cwd) else HOME
+    env["PATH"] = f"/opt/homebrew/bin:/usr/local/bin:{HOME}/.local/bin:" + env.get("PATH", "")
+    args = ["bash", LAUNCH, account, perm]
+    if name:
+        args.append(name)
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=40, env=env).stdout
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    tmux_name = None
+    for line in out.splitlines():
+        if "tmux=" in line:
+            for tok in line.split():
+                if tok.startswith("tmux="):
+                    tmux_name = tok.split("=", 1)[1]
+    if tmux_name:
+        return {"ok": True, "tmux": tmux_name}
+    return {"ok": False, "error": out.strip() or "launch failed"}
+
+def kill_session(name):
+    try:
+        subprocess.run([TMUX, "kill-session", "-t", name], capture_output=True, timeout=8)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def list_dir(path):
+    path = os.path.realpath(path or workspace_roots()[0])
+    if not os.path.isdir(path):
+        return {"error": f"Not a folder: {path}"}
+    entries = []
+    try:
+        for nm in sorted(os.listdir(path), key=lambda s: s.lower()):
+            full = os.path.join(path, nm)
+            try:
+                is_dir = os.path.isdir(full)
+            except OSError:
+                is_dir = False
+            entries.append({"name": nm, "path": full, "dir": is_dir})
+    except PermissionError:
+        return {"error": "Permission denied."}
+    entries.sort(key=lambda e: (not e["dir"], e["name"].lower()))
+    parent = os.path.dirname(path.rstrip("/")) or "/"
+    return {"path": path, "parent": parent, "entries": entries}
+
+def read_file(path):
+    path = os.path.realpath(path)
+    if not os.path.isfile(path):
+        return {"error": "Not a file."}
+    try:
+        if os.path.getsize(path) > MAX_READ:
+            return {"error": f"File too large (>{MAX_READ // 1000} KB) for the editor."}
+        with open(path, "rb") as f:
+            data = f.read()
+        if b"\x00" in data[:8192]:
+            return {"error": "Binary file — can't edit as text."}
+        return {"path": path, "content": data.decode("utf-8", errors="replace")}
+    except Exception as e:
+        return {"error": str(e)}
+
+def write_file(path, content):
+    path = os.path.realpath(path)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def repos():
+    out = []
+    for root in workspace_roots():
+        if root == HOME:
+            out.append({"name": "~ (home)", "path": HOME})
+            continue
+        try:
+            for nm in sorted(os.listdir(root), key=lambda s: s.lower()):
+                full = os.path.join(root, nm)
+                if os.path.isdir(full) and not nm.startswith("."):
+                    out.append({"name": nm, "path": full})
+        except Exception:
+            pass
+    return out
+
+# ---- HTTP --------------------------------------------------------------------
+
+PAGE = r"""<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Session Launcher</title>
+<style>
+:root{--bg:#0f0e0d;--panel:#1a1817;--panel2:#221f1d;--line:#2e2a27;--ink:#efe9e2;--mut:#9a8f84;--accent:#e0556a;--accent2:#c53b52;--good:#63c07a;--warn:#e0a955}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{max-width:100%;overflow-x:hidden}
+img,pre,textarea,input,select{max-width:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding-bottom:env(safe-area-inset-bottom)}
+header{position:sticky;top:0;background:rgba(15,14,13,.86);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);padding:14px 16px calc(14px);display:flex;align-items:center;gap:10px;z-index:10;padding-top:calc(14px + env(safe-area-inset-top))}
+header h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.01em}
+header .dot{width:9px;height:9px;border-radius:50%;background:var(--good);box-shadow:0 0 8px var(--good)}
+.tabs{display:flex;gap:4px;padding:10px 12px;position:sticky;top:57px;background:var(--bg);z-index:9}
+.tab{flex:1;text-align:center;padding:9px;border-radius:10px;background:var(--panel);color:var(--mut);font-weight:600;font-size:14px;border:1px solid transparent}
+.tab.on{background:var(--accent);color:#fff}
+main{padding:8px 12px 40px;max-width:720px;margin:0 auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin:10px 0;display:flex;align-items:center;gap:12px;cursor:pointer;transition:.12s}
+.card:active{transform:scale(.99);background:var(--panel2)}
+.card .ic{font-size:20px;width:26px;text-align:center;flex:0 0 auto}
+.card .body{flex:1 1 auto;min-width:0}
+.card .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .sub{font-size:12.5px;color:var(--mut)}
+.card .chev{color:var(--mut);flex:0 0 auto}
+.pill{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;flex:0 0 auto;white-space:nowrap}
+.pill.att{background:rgba(99,192,122,.16);color:var(--good)}
+.pill.idle{background:#2a2724;color:var(--mut)}
+.fab{position:fixed;right:18px;bottom:calc(20px + env(safe-area-inset-bottom));width:56px;height:56px;border-radius:50%;background:var(--accent);color:#fff;border:none;font-size:28px;box-shadow:0 6px 20px rgba(224,85,106,.45);z-index:20}
+.muted{color:var(--mut);font-size:14px;text-align:center;padding:30px 10px}
+.crumb{font:12.5px/1.5 ui-monospace,Menlo,monospace;color:var(--mut);padding:6px 4px;word-break:break-all}
+label{display:block;font-size:13px;color:var(--mut);margin:14px 0 5px;font-weight:600}
+input,select,textarea{width:100%;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:12px;font-size:16px;font-family:inherit}
+textarea{font:13px/1.5 ui-monospace,Menlo,monospace;min-height:52vh;resize:vertical;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+.seg{display:flex;gap:6px;flex-wrap:wrap}.seg button{flex:1 1 90px;min-width:0;padding:11px;border-radius:10px;background:var(--panel2);color:var(--mut);border:1px solid var(--line);font-weight:600;font-size:14px}
+.seg button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn{display:block;width:100%;padding:14px;border-radius:12px;background:var(--accent);color:#fff;border:none;font-size:16px;font-weight:700;margin-top:20px}
+.btn.sec{background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:30;display:none}
+.sheet.on{display:block}
+.sheet .inner{position:absolute;left:0;right:0;bottom:0;background:var(--bg);border-radius:20px 20px 0 0;border-top:1px solid var(--line);max-height:92vh;overflow:auto;padding:8px 16px calc(24px + env(safe-area-inset-bottom))}
+.sheet .grab{width:38px;height:5px;border-radius:3px;background:var(--line);margin:8px auto 4px}
+.sheet h2{font-size:18px;margin:6px 0 2px}
+.editbar{display:flex;gap:8px;align-items:flex-start;margin:6px 0}
+.editbar .fn{flex:1;min-width:0;font:12px/1.4 ui-monospace,Menlo,monospace;color:var(--mut);word-break:break-all;overflow-wrap:anywhere}
+.small{font-size:12px;color:var(--mut)}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:90px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);padding:10px 16px;border-radius:24px;z-index:40;opacity:0;transition:.2s;font-size:14px}
+.toast.on{opacity:1}
+</style></head><body>
+<header><span class="dot"></span><h1>Session Launcher</h1></header>
+<div class="tabs"><div class="tab on" data-t="sessions" onclick="tab('sessions')">Sessions</div><div class="tab" data-t="files" onclick="tab('files')">Files</div></div>
+<main id="main"></main>
+<button class="fab" id="fab" onclick="openLaunch()">+</button>
+<div class="sheet" id="sheet"><div class="inner" id="sheetInner"></div></div>
+<div class="toast" id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);let view='sessions',cwd=null,repoList=[];
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),1800)}
+async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await r.text());return r.json()}
+function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function tab(t){view=t;document.querySelectorAll('.tab').forEach(e=>e.classList.toggle('on',e.dataset.t===t));$('#fab').style.display=t==='sessions'?'':'none';render()}
+async function render(){view==='sessions'?renderSessions():renderFiles()}
+async function renderSessions(){
+  const m=$('#main');m.innerHTML='<div class="muted">Loading…</div>';
+  try{const s=await api('/api/sessions');
+    if(!s.length){m.innerHTML='<div class="muted">No sessions yet. Tap + to start one.</div>';return}
+    m.innerHTML=s.map(x=>`<div class="card" onclick="openTerm('${encodeURIComponent(x.name)}')">
+      <div class="ic">${x.claude?'✦':'▹'}</div>
+      <div class="body"><div class="nm">${esc(x.name)}</div><div class="sub">${x.windows} window${x.windows==='1'?'':'s'}</div></div>
+      <span class="pill ${x.attached?'att':'idle'}">${x.attached?'attached':'idle'}</span>
+      <span class="chev" onclick="event.stopPropagation();killS('${esc(x.name)}')">✕</span></div>`).join('');
+  }catch(e){m.innerHTML='<div class="muted">Couldn\'t load sessions.<br>'+esc(e.message)+'</div>'}
+}
+function openTerm(n){location.href='/term?s='+n}
+async function killS(n){if(!confirm('Kill session '+n+'?'))return;await api('/api/kill',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:n})});toast('Killed '+n);render()}
+async function renderFiles(){
+  const m=$('#main');m.innerHTML='<div class="muted">Loading…</div>';
+  try{const d=await api('/api/ls?path='+encodeURIComponent(cwd||''));cwd=d.path;
+    let h=`<div class="crumb">${esc(d.path)}</div>`;
+    h+=`<div class="card" onclick="cwd='${esc(d.parent)}';render()"><div class="ic">↰</div><div class="body"><div class="nm">..</div><div class="sub">up one folder</div></div></div>`;
+    h+=d.entries.map(e=>e.dir
+      ?`<div class="card" onclick="cwd='${esc(e.path).replace(/'/g,"\\'")}';render()"><div class="ic">📁</div><div class="body"><div class="nm">${esc(e.name)}</div></div><span class="chev">›</span></div>`
+      :`<div class="card" onclick="openFile('${esc(e.path).replace(/'/g,"\\'")}')"><div class="ic">📄</div><div class="body"><div class="nm">${esc(e.name)}</div></div><span class="chev">›</span></div>`).join('');
+    m.innerHTML=h;
+  }catch(e){m.innerHTML='<div class="muted">'+esc(e.message)+'</div>'}
+}
+async function openFile(p){
+  try{const d=await api('/api/read?path='+encodeURIComponent(p));
+    if(d.error){toast(d.error);return}
+    sheet(`<h2>Edit</h2><div class="editbar"><div class="fn">${esc(d.path)}</div></div>
+      <textarea id="ed" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+      <button class="btn" onclick="saveFile('${esc(p).replace(/'/g,"\\'")}')">Save</button>
+      <button class="btn sec" onclick="closeSheet()">Close</button>`);
+    $('#ed').value=d.content;
+  }catch(e){toast(e.message)}
+}
+async function saveFile(p){const c=$('#ed').value;try{await api('/api/write',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:p,content:c})});toast('Saved ✓')}catch(e){toast('Save failed: '+e.message)}}
+async function openLaunch(){
+  if(!repoList.length){try{repoList=(await api('/api/repos')).repos}catch(e){}}
+  let accts=['default'];try{accts=(await api('/api/accounts')).accounts||accts}catch(e){}
+  const opts=repoList.map(r=>`<option value="${esc(r.path)}">${esc(r.name)}</option>`).join('');
+  const acctBtns=accts.map((a,i)=>`<button class="${i===0?'on':''}" data-v="${esc(a)}" onclick="segpick(this)">${esc(a)}</button>`).join('');
+  sheet(`<h2>New Claude session</h2>
+    <label>Name</label><input id="l_name" placeholder="my task" autocapitalize="off">
+    <label>Folder to run in</label><select id="l_cwd">${opts}</select>
+    <label>Account</label><div class="seg" id="l_acct">${acctBtns}</div>
+    <label>Permissions</label><div class="seg" id="l_perm">
+      <button class="on" data-v="auto" onclick="segpick(this)">auto</button>
+      <button data-v="bypass" onclick="segpick(this)">bypass</button></div>
+    <div class="small" style="margin-top:8px">"default" is your main Claude sign-in; other accounts you added appear by name.</div>
+    <button class="btn" id="l_go" onclick="doLaunch()">Launch &amp; open</button>
+    <button class="btn sec" onclick="closeSheet()">Cancel</button>`);
+}
+function segpick(b){[...b.parentNode.children].forEach(x=>x.classList.remove('on'));b.classList.add('on')}
+function segval(id){const e=$('#'+id+' .on');return e?e.dataset.v:''}
+async function doLaunch(){
+  const body={name:$('#l_name').value,cwd:$('#l_cwd').value,account:segval('l_acct'),perm:segval('l_perm')};
+  $('#l_go').textContent='Launching…';$('#l_go').disabled=true;
+  try{const r=await api('/api/launch',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){location.href='/term?s='+encodeURIComponent(r.tmux)}else{toast(r.error||'failed');$('#l_go').textContent='Launch & open';$('#l_go').disabled=false}
+  }catch(e){toast(e.message);$('#l_go').textContent='Launch & open';$('#l_go').disabled=false}
+}
+function sheet(h){$('#sheetInner').innerHTML='<div class="grab"></div>'+h;$('#sheet').classList.add('on')}
+function closeSheet(){$('#sheet').classList.remove('on')}
+$('#sheet').addEventListener('click',e=>{if(e.target.id==='sheet')closeSheet()});
+render();
+</script></body></html>"""
+
+class H(BaseHTTPRequestHandler):
+    def _auth(self):
+        if not PW:
+            return True
+        hdr = self.headers.get("Authorization", "")
+        if hdr.startswith("Basic "):
+            try:
+                user, pw = base64.b64decode(hdr[6:]).decode().split(":", 1)
+                if user == "portal" and pw == PW:
+                    return True
+            except Exception:
+                pass
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Session Launcher"')
+        self.end_headers()
+        return False
+
+    def _json(self, obj, code=200):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self):
+        n = int(self.headers.get("content-length", 0))
+        return json.loads(self.rfile.read(n) or b"{}")
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if not self._auth():
+            return
+        u = urllib.parse.urlparse(self.path)
+        q = urllib.parse.parse_qs(u.query)
+        if u.path == "/":
+            body = PAGE.encode()
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif u.path == "/api/sessions":
+            self._json(list_sessions())
+        elif u.path == "/api/repos":
+            self._json({"repos": repos()})
+        elif u.path == "/api/accounts":
+            self._json({"accounts": available_accounts()})
+        elif u.path == "/api/ls":
+            self._json(list_dir(q.get("path", [""])[0]))
+        elif u.path == "/api/read":
+            self._json(read_file(q.get("path", [""])[0]))
+        elif u.path == "/term":
+            name = q.get("s", [""])[0]
+            self.send_response(302)
+            self.send_header("Location", f"http://{TSIP}:{TTYD_PORT}/?arg={urllib.parse.quote(name)}")
+            self.end_headers()
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def do_POST(self):
+        if not self._auth():
+            return
+        u = urllib.parse.urlparse(self.path)
+        try:
+            b = self._body()
+        except Exception:
+            return self._json({"ok": False, "error": "bad body"}, 400)
+        if u.path == "/api/launch":
+            self._json(launch_session(b.get("name"), b.get("account"), b.get("perm"), b.get("cwd")))
+        elif u.path == "/api/kill":
+            self._json(kill_session(b.get("name", "")))
+        elif u.path == "/api/write":
+            self._json(write_file(b.get("path", ""), b.get("content", "")))
+        else:
+            self._json({"error": "not found"}, 404)
+
+if __name__ == "__main__":
+    bind = TSIP if TSIP != "127.0.0.1" else "0.0.0.0"
+    print(f"Session Launcher web dashboard on http://{bind}:{PORT}  (tmux={TMUX}, pw={'set' if PW else 'NONE'})")
+    ThreadingHTTPServer((bind, PORT), H).serve_forever()

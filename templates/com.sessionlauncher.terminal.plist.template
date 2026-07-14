@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd agent: keeps the Session Launcher terminal (ttyd) running.
+     Runs portal.sh at login and restarts it if it exits. The literal
+     __HOME__ placeholder is sed-replaced with the installing user's home
+     directory, so this template stays username-generic. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.sessionlauncher.terminal</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.claude-launcher/bin/portal.sh</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.claude-launcher/terminal.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.claude-launcher/terminal.log</string>
+</dict>
+</plist>

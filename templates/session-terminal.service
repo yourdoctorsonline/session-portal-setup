@@ -1,0 +1,13 @@
+# systemd user unit: keeps the Session Launcher terminal (ttyd) running.
+# Install under ~/.config/systemd/user/ and enable with `systemctl --user`.
+# %h expands to the user's home directory, so this unit stays username-generic.
+[Unit]
+Description=Session Launcher terminal (ttyd)
+
+[Service]
+ExecStart=%h/.claude-launcher/bin/portal.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
