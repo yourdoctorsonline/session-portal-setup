@@ -324,6 +324,35 @@ $('#sheet').addEventListener('click',e=>{if(e.target.id==='sheet')closeSheet()})
 render();
 </script></body></html>"""
 
+# /term wrapper: full-bleed iframe over ttyd that reconnects itself. ttyd's own
+# "Press ⏎ to Reconnect" overlay only listens for a keyboard Enter — dead on
+# phones — so the wrapper reloads the iframe whenever the page comes back after
+# sleep/lock (visibilitychange/focus, gated to real absences) or the network
+# returns ('online'). Enter still works inside the iframe on desktop.
+TERM_PAGE = """<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>__TITLE__</title>
+<style>html,body{margin:0;height:100%;background:#0f0e0d}iframe{border:0;width:100%;height:100%;display:block}</style>
+</head><body>
+<iframe id="t" src="__SRC__" allow="clipboard-read;clipboard-write"></iframe>
+<script>
+var f=document.getElementById('t'),away=0;
+function reconnect(){f.src=f.src}
+function gone(){away=Date.now()}
+function back(){if(away&&Date.now()-away>8000){reconnect()}away=0}
+document.addEventListener('visibilitychange',function(){document.hidden?gone():back()});
+window.addEventListener('blur',gone);
+window.addEventListener('focus',back);
+window.addEventListener('online',reconnect);
+</script></body></html>"""
+
+def term_page(name):
+    src = f"http://{TSIP}:{TTYD_PORT}/?arg={urllib.parse.quote(name or '', safe='')}"
+    return (TERM_PAGE
+            .replace("__SRC__", html.escape(src, quote=True))
+            .replace("__TITLE__", html.escape(name or "Session")))
+
 class H(BaseHTTPRequestHandler):
     def _auth(self):
         if not PW:
@@ -380,9 +409,12 @@ class H(BaseHTTPRequestHandler):
             self._json(read_file(q.get("path", [""])[0]))
         elif u.path == "/term":
             name = q.get("s", [""])[0]
-            self.send_response(302)
-            self.send_header("Location", f"http://{TSIP}:{TTYD_PORT}/?arg={urllib.parse.quote(name)}")
+            body = term_page(name).encode()
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
             self.end_headers()
+            self.wfile.write(body)
         else:
             self._json({"error": "not found"}, 404)
 
