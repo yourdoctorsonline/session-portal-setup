@@ -160,33 +160,9 @@ say "${C_BOLD}Session Launcher — team setup${C_RESET}"
 say "This gets you from a blank machine to a phone-reachable portal. It's safe to"
 say "re-run: anything already done gets skipped."
 
-# ---- resolve SRC (the public-repo layout we install from) -------------------
-SRC=""
-if [ -n "${SETUP_SRC:-}" ]; then
-  SRC="$SETUP_SRC"
-  [ -d "$SRC" ] || { fail_msg "SETUP_SRC=$SRC is not a folder."; exit 1; }
-else
-  say ""
-  say "Downloading the Session Launcher files..."
-  if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
-    say "DRYRUN: would download $REPO_URL"
-    SRC="$LAUNCHER_DIR/.dryrun-src"
-  else
-    DL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/session-portal.XXXXXX")"
-    if have curl && curl -fsSL "$REPO_URL" -o "$DL_DIR/main.tar.gz" 2>/dev/null \
-        && tar -xzf "$DL_DIR/main.tar.gz" -C "$DL_DIR" 2>/dev/null; then
-      SRC="$DL_DIR/session-portal-setup-main"
-    fi
-    if [ -z "$SRC" ] || [ ! -d "$SRC" ]; then
-      fail_msg "Couldn't download the setup files."
-      say "Check your internet connection, or download the repo yourself and re-run"
-      say "with SETUP_SRC pointing at the extracted folder."
-      exit 1
-    fi
-  fi
-fi
-
 # ---- STEP 1: machine check --------------------------------------------------
+# Runs BEFORE anything touches the disk or network (AC-TI-003: an unsupported
+# machine must get the Windows/WSL guidance and exit 2 with zero side effects).
 step_banner 1 "Checking your machine"
 PLATFORM="$(platform_detect)"; PLAT_RC=$?
 case "$PLATFORM" in
@@ -212,6 +188,33 @@ case "$PLATFORM" in
     exit 2
     ;;
 esac
+
+# ---- resolve SRC (the public-repo layout we install from) -------------------
+SRC=""
+if [ -n "${SETUP_SRC:-}" ]; then
+  SRC="$SETUP_SRC"
+  [ -d "$SRC" ] || { fail_msg "SETUP_SRC=$SRC is not a folder."; exit 1; }
+else
+  say ""
+  say "Downloading the Session Launcher files..."
+  if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+    say "DRYRUN: would download $REPO_URL"
+    SRC="$LAUNCHER_DIR/.dryrun-src"
+  else
+    DL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/session-portal.XXXXXX")"
+    trap 'rm -rf "$DL_DIR"' EXIT
+    if have curl && curl -fsSL "$REPO_URL" -o "$DL_DIR/main.tar.gz" 2>/dev/null \
+        && tar -xzf "$DL_DIR/main.tar.gz" -C "$DL_DIR" 2>/dev/null; then
+      SRC="$DL_DIR/session-portal-setup-main"
+    fi
+    if [ -z "$SRC" ] || [ ! -d "$SRC" ]; then
+      fail_msg "Couldn't download the setup files."
+      say "Check your internet connection, or download the repo yourself and re-run"
+      say "with SETUP_SRC pointing at the extracted folder."
+      exit 1
+    fi
+  fi
+fi
 
 # ---- STEP 2: basics (package tools) -----------------------------------------
 step_banner 2 "Installing the basic tools"
@@ -433,7 +436,7 @@ elif [ "$PLATFORM" = "wsl" ]; then
 fi
 
 # ---- STEP 6b: workspace folder (AC-TI-009) ----------------------------------
-step_banner 6 "Choosing your projects folder"
+step_banner 7 "Choosing your projects folder"
 CUR_WS=""
 [ -f "$ENV_FILE" ] && CUR_WS="$(grep '^WORKSPACE_ROOT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
 ask WSROOT "Where do your project folders live?" "${CUR_WS:-$HOME/repos}"
@@ -446,7 +449,7 @@ else
 fi
 
 # ---- STEP 7: verify checklist (AC-TI-013) -----------------------------------
-step_banner 7 "Checking everything works"
+step_banner 8 "Checking everything works"
 CHECK_FAIL=0
 check() {
   # check "label" 0|1  (1 == ok)
@@ -509,7 +512,7 @@ else
 fi
 
 # ---- STEP 8: handoff (URL + QR) ---------------------------------------------
-step_banner 8 "You're set — open it on your phone"
+say ""; say "${C_BOLD}You're set — open it on your phone${C_RESET}"
 URL="http://${TS_IP:-127.0.0.1}:8090"
 say ""
 say "${C_BOLD}${C_GREEN}  $URL${C_RESET}"

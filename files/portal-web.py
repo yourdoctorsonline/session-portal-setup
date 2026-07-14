@@ -6,9 +6,11 @@ A graphical portal that replicates the iOS app in the browser: session cards
 picker, and a file browser/editor. Runs ON the Mac, so no SSH keys — it drives
 tmux and the filesystem locally.
 
-Security: binds to the Tailscale IP only (tailnet-only, WireGuard-encrypted),
-HTTP Basic auth, subprocess with list-args (no shell injection), 512 KB read
-cap. Terminals are served by ttyd on :7681 (this app 302-redirects to it).
+Security: binds to the Tailscale IP only (tailnet-only, WireGuard-encrypted).
+No password — each person's portal lives on their own single-user tailnet, so
+tailnet membership already means "is the owner" (never expose via `tailscale
+funnel`). Subprocess with list-args (no shell injection), 512 KB read cap.
+Terminals are served by ttyd on :7681 (this app 302-redirects to it).
 """
 import base64, html, json, os, socket, subprocess, sys, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
