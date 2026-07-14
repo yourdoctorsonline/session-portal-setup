@@ -90,6 +90,11 @@ while "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null; do
   TMUX_NAME="${BASE}-${n}"; n=$((n + 1))
 done
 
+# Effort level for the session. Default is ultracode (multi-agent orchestration
+# on every substantive task); override per launch with LAUNCH_EFFORT=low|...|max.
+# Unknown values are safe: claude warns and falls back to its default.
+EFFORT="${LAUNCH_EFFORT:-ultracode}"
+
 # Inner command run inside the tmux pane. Absolute paths + explicit PATH make it
 # independent of how the outer shell was invoked. exec binds the pane lifetime
 # to Claude, so the tmux session ends when the session ends.
@@ -98,6 +103,7 @@ CONFIG_EXPORT=""
 INNER="export PATH=$(printf '%q' "$EXTRA_PATH"):\$PATH; \
 ${CONFIG_EXPORT}\
 exec $(printf '%q' "$CLAUDE_BIN") --permission-mode $PERM_MODE \
+--effort $(printf '%q' "$EFFORT") \
 --name $(printf '%q' "$NAME") \
 --remote-control $(printf '%q' "$NAME")"
 
