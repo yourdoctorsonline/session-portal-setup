@@ -143,6 +143,46 @@ creds_ok() {
   return 1
 }
 
+# setup_backup — ensure the user's agentic-os repo is backed up to a PRIVATE repo
+# on their OWN GitHub (outside any org), if it isn't already. Uses gh to create a
+# private repo named `agentic-os`, wires it as the `backup` remote, and pushes.
+# The hourly job (backup-agentic-os.sh) keeps it current with one-way snapshot
+# force-pushes — it never merges/pulls, so no conflicts. Idempotent.
+setup_backup() {
+  local ws repo ghuser
+  ws="$(grep '^WORKSPACE_ROOT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+  repo="${ws:-$HOME/repos}/agentic-os"
+  if [ ! -d "$repo/.git" ]; then
+    say "  No agentic-os git repo at $repo yet — skipping backup. Re-run me after you clone it."
+    return 0
+  fi
+  if ! have gh; then warn "GitHub CLI (gh) isn't available — skipping backup."; return 0; fi
+  if ! gh auth status >/dev/null 2>&1; then
+    say "  To back up privately to YOUR OWN GitHub, sign in to GitHub now (a browser code):"
+    gh auth login < /dev/tty || { warn "GitHub sign-in didn't finish — skipping backup (re-run me later)."; return 0; }
+  fi
+  ghuser="$(gh api user -q .login 2>/dev/null)"
+  [ -n "$ghuser" ] || { warn "Couldn't read your GitHub username — skipping backup."; return 0; }
+  # Already backed up to a repo you personally own?
+  if git -C "$repo" remote -v 2>/dev/null | grep -qiE "github\.com[:/]$ghuser/"; then
+    ok "agentic-os is already backed up to your own GitHub ($ghuser) — leaving it."
+    return 0
+  fi
+  if gh repo view "$ghuser/agentic-os" >/dev/null 2>&1; then
+    say "  Using your existing private repo $ghuser/agentic-os as the backup."
+  else
+    run "creating your private backup repo ($ghuser/agentic-os)" gh repo create "$ghuser/agentic-os" --private
+  fi
+  git -C "$repo" remote get-url backup >/dev/null 2>&1 \
+    || git -C "$repo" remote add backup "https://github.com/$ghuser/agentic-os.git"
+  say "  Pushing the first backup…"
+  bash "$BIN_DIR/backup-agentic-os.sh" "$repo" || true
+  say ""
+  say "  ${C_BOLD}Backed up to a PRIVATE repo: github.com/$ghuser/agentic-os${C_RESET}"
+  say "  Only you can see it — not the yourdoctorsonline org and not your teammates."
+  say "  (It refreshes on its own every hour; it only ever pushes, never merges.)"
+}
+
 # apply_orchestrator_defaults SRC — make every signed-in Claude account launch as
 # an ENGINEERING ORCHESTRATOR: Opus 4.8 + ultracode effort, the eng-harness
 # conductor skill (with its superpowers + zero-trust-verification deps), and a
@@ -354,7 +394,7 @@ if [ "$PLATFORM" = "mac" ]; then
       exit 1
     fi
   fi
-  for tool in tmux ttyd qrencode; do
+  for tool in tmux ttyd qrencode gh; do
     if have "$tool"; then
       ok "$tool already installed."
     else
@@ -377,7 +417,7 @@ elif [ "$PLATFORM" = "wsl" ]; then
   # leaves ALL of them missing. A loop lets ttyd's absence fail on its own while
   # tmux/python3/qrencode still install.
   APT_UPDATED=0
-  for tool in tmux python3 qrencode; do
+  for tool in tmux python3 qrencode gh; do
     if have "$tool"; then
       ok "$tool already installed."
     else
@@ -593,7 +633,7 @@ if [ "$PLATFORM" = "mac" ]; then
   # prefer the brew-prefix python, fall back to whatever python3 is on PATH.
   PYBIN="$(brew --prefix 2>/dev/null)/bin/python3"
   [ -x "$PYBIN" ] || PYBIN="$(command -v python3 || echo /usr/bin/python3)"
-  for label in com.sessionlauncher.terminal com.sessionlauncher.dashboard com.sessionlauncher.watchdog; do
+  for label in com.sessionlauncher.terminal com.sessionlauncher.dashboard com.sessionlauncher.watchdog com.sessionlauncher.backup; do
     TPL="$SRC/templates/$label.plist.template"
     PLIST="$LA_DIR/$label.plist"
     if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
@@ -621,8 +661,11 @@ elif [ "$PLATFORM" = "wsl" ]; then
     # The fd watchdog (see fd-watchdog.sh) — a oneshot service fired by a timer.
     cp "$SRC"/templates/session-watchdog.service "$SD_DIR"/ 2>/dev/null || true
     cp "$SRC"/templates/session-watchdog.timer "$SD_DIR"/ 2>/dev/null || true
+    # Hourly private backup (see backup-agentic-os.sh) — a oneshot + timer.
+    cp "$SRC"/templates/session-backup.service "$SD_DIR"/ 2>/dev/null || true
+    cp "$SRC"/templates/session-backup.timer "$SD_DIR"/ 2>/dev/null || true
     systemctl --user daemon-reload 2>/dev/null || true
-    systemctl --user enable --now session-terminal session-dashboard session-watchdog.timer 2>/dev/null \
+    systemctl --user enable --now session-terminal session-dashboard session-watchdog.timer session-backup.timer 2>/dev/null \
       && ok "Portal services enabled" \
       || warn "Couldn't enable the portal services automatically."
     # Keep the --user services (and thus the portal) running after the Ubuntu
@@ -649,6 +692,15 @@ if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
 else
   upsert_env WORKSPACE_ROOT "$WSROOT" "$ENV_FILE"
   ok "Saved your projects folder: $WSROOT"
+fi
+
+# ---- Private backup of agentic-os -------------------------------------------
+say ""
+say "Backing up your agentic-os to a private repo…"
+if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+  say "DRYRUN: would check for a personal backup and, if missing, gh-create a private <you>/agentic-os and push"
+else
+  setup_backup
 fi
 
 # ---- STEP 7: verify checklist (AC-TI-013) -----------------------------------
