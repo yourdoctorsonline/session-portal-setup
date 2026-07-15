@@ -403,7 +403,7 @@ fi
 if [ "$PLATFORM" = "mac" ]; then
   LA_DIR="$HOME/Library/LaunchAgents"
   run "creating $LA_DIR" mkdir -p "$LA_DIR"
-  for label in com.sessionlauncher.terminal com.sessionlauncher.dashboard; do
+  for label in com.sessionlauncher.terminal com.sessionlauncher.dashboard com.sessionlauncher.watchdog; do
     TPL="$SRC/templates/$label.plist.template"
     PLIST="$LA_DIR/$label.plist"
     if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
@@ -424,14 +424,21 @@ elif [ "$PLATFORM" = "wsl" ]; then
   SD_DIR="$HOME/.config/systemd/user"
   run "creating $SD_DIR" mkdir -p "$SD_DIR"
   if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
-    say "DRYRUN: would install session-terminal.service + session-dashboard.service and enable them"
+    say "DRYRUN: would install session-terminal.service + session-dashboard.service + session-watchdog.service/.timer and enable them"
   else
     cp "$SRC"/templates/session-terminal.service "$SD_DIR"/ 2>/dev/null || true
     cp "$SRC"/templates/session-dashboard.service "$SD_DIR"/ 2>/dev/null || true
+    # The fd watchdog (see fd-watchdog.sh) — a oneshot service fired by a timer.
+    cp "$SRC"/templates/session-watchdog.service "$SD_DIR"/ 2>/dev/null || true
+    cp "$SRC"/templates/session-watchdog.timer "$SD_DIR"/ 2>/dev/null || true
     systemctl --user daemon-reload 2>/dev/null || true
-    systemctl --user enable --now session-terminal session-dashboard 2>/dev/null \
+    systemctl --user enable --now session-terminal session-dashboard session-watchdog.timer 2>/dev/null \
       && ok "Portal services enabled" \
       || warn "Couldn't enable the portal services automatically."
+    # Re-runs land the raised LimitNOFILE on an already-running terminal. Safe:
+    # tmux sessions belong to the tmux server and survive a ttyd restart. no-op
+    # when the unit isn't running yet (a fresh install already started it above).
+    systemctl --user try-restart session-terminal 2>/dev/null || true
   fi
 fi
 
