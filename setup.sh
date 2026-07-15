@@ -20,6 +20,11 @@
 # -----------------------------------------------------------------------------
 set -u
 
+# Every `sudo` in this installer asks for the COMPUTER login password, not a
+# Tailscale/GitHub/Claude password. A bare sudo prompt just says "Password:",
+# which people mistake for the app they're installing — so spell it out.
+export SUDO_PROMPT='Enter your computer password (the one you log into this computer with — NOT Tailscale/GitHub/Claude): '
+
 # ============================================================================
 # LIBRARY
 # ============================================================================
@@ -539,6 +544,12 @@ fi
 
 # ---- STEP 5: Tailscale (AC-TI-007) ------------------------------------------
 step_banner 5 "Setting up Tailscale (your private network)"
+say ""
+say "${C_BOLD}Heads up: this step will ask for your computer password${C_RESET} — the one you"
+say "log into this computer with, ${C_BOLD}not${C_RESET} a Tailscale password."
+say "${C_BOLD}As you type it, nothing shows on screen — no dots, no stars.${C_RESET} That's"
+say "normal (it's hidden on purpose). Just type it and press Enter."
+say ""
 if [ "$PLATFORM" = "mac" ]; then
   # Install the Homebrew FORMULA (CLI + tailscaled daemon), NOT `--cask tailscale`:
   # the cask is the GUI app only and ships NO `tailscale` command, so every step
