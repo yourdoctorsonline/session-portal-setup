@@ -143,6 +143,52 @@ creds_ok() {
   return 1
 }
 
+# apply_orchestrator_defaults SRC — make every signed-in Claude account launch as
+# an ENGINEERING ORCHESTRATOR: Opus 4.8 + ultracode effort, the eng-harness
+# conductor skill (with its superpowers + zero-trust-verification deps), and a
+# standing instruction to route routine subagent work to Sonnet. SRC is the
+# extracted repo root (it ships the skills under SRC/skills/). Idempotent.
+apply_orchestrator_defaults() {
+  local src="$1" cfg name sk
+  for cfg in "$HOME"/.claude "$HOME"/.claude-*; do
+    [ -d "$cfg" ] || continue
+    name="$(basename "$cfg")"
+    case "$name" in .claude-launcher|.claude-swap-backup*) continue ;; esac
+    creds_ok "$cfg" || continue   # only accounts that are actually signed in
+    say "  configuring $name as an engineering orchestrator…"
+    mkdir -p "$cfg/skills"
+    # eng-harness + its hard dep, copied in (survive without the source repo)
+    for sk in eng-harness zero-trust-verification; do
+      [ -d "$src/skills/$sk" ] && { rm -rf "$cfg/skills/$sk"; cp -R "$src/skills/$sk" "$cfg/skills/$sk"; }
+    done
+    # superpowers plugin — the harness invokes superpowers:brainstorming etc.
+    if ! ls -d "$cfg"/plugins/cache/*/superpowers >/dev/null 2>&1; then
+      CLAUDE_CONFIG_DIR="$cfg" claude plugin marketplace add anthropics/claude-plugins-official >/dev/null 2>&1 || true
+      CLAUDE_CONFIG_DIR="$cfg" claude plugin install superpowers@claude-plugins-official >/dev/null 2>&1 || true
+    fi
+    # model (Opus 4.8) + effort (ultracode) in settings.json
+    python3 - "$cfg/settings.json" <<'PY'
+import json, os, sys
+f = sys.argv[1]
+d = json.load(open(f)) if os.path.exists(f) else {}
+d["model"] = "opus[1m]"; d["effortLevel"] = "ultracode"
+json.dump(d, open(f, "w"), indent=2); open(f, "a").write("\n")
+PY
+    # Sonnet-subagent routing instruction (no hard switch exists — this is it)
+    if ! grep -q "Engineering Orchestrator" "$cfg/CLAUDE.md" 2>/dev/null; then
+      cat >> "$cfg/CLAUDE.md" <<'MD'
+
+# Session defaults — Engineering Orchestrator
+
+- **Model:** Opus 4.8 (settings.json). Keep the main loop, judgment, and final verification on Opus.
+- **Effort:** ultracode (settings.json) — reach for the Workflow tool on substantive work.
+- **Engineering discipline:** invoke the **eng-harness** skill for any build / fix / refactor / script / ship (it is the mandatory conductor; a fast lane covers small changes).
+- **Model routing:** delegate routine, parallel, mechanical, and first-pass subagent work to **Sonnet** (`model: 'sonnet'` in Workflow `agent()` / Task). Reserve Opus for the conductor, hard judgment, and final adversarial verification.
+MD
+    fi
+  done
+}
+
 # claude_signin [CONFIG_DIR] — run `claude` interactively for sign-in with stdio
 # that WON'T crash. Newer Bun-based claude builds throw
 # `TypeError: undefined is not an object (evaluating 'process.stderr.fd')` when
@@ -437,6 +483,19 @@ while : ; do
     warn "That one didn't finish signing in — you can re-run me later to add it."
   fi
 done
+
+# ---- Engineering-orchestrator defaults --------------------------------------
+# Every launched Claude session runs on Opus 4.8 at ultracode effort with the
+# eng-harness conductor and Sonnet-subagent routing. (Team standard — the owner
+# saw lower-effort models give low-quality answers, so this is the floor.)
+say ""
+say "Setting up engineering defaults (Opus 4.8 + ultracode + eng-harness)…"
+if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+  say "DRYRUN: would set model/effort, install eng-harness + superpowers, add routing note for each signed-in account"
+else
+  apply_orchestrator_defaults "$SRC"
+  ok "Engineering defaults applied."
+fi
 
 # ---- STEP 5: Tailscale (AC-TI-007) ------------------------------------------
 step_banner 5 "Setting up Tailscale (your private network)"

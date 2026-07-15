@@ -50,6 +50,8 @@ That's it. From here the setup asks you questions and does the work. Here's what
 
 **4. Add another Claude account?** It asks if you want to add a second Claude login. This is optional. If you do, it signs that one in too, and asks again until you say no. Every account you add shows up in the portal automatically, so you can switch between them from your phone.
 
+**Engineering defaults.** Right after accounts, it configures every signed-in Claude account so your launched sessions run as **engineering orchestrators**: Opus 4.8 at ultracode effort, with the `eng-harness` conductor skill (and its `superpowers` + `zero-trust-verification` dependencies) installed, plus an instruction to delegate routine subagent work to Sonnet. This is the team standard — high-effort by default so you don't get low-quality answers from a weaker model. (If your account doesn't have Opus 1M-context access, change `model` in the account's `settings.json` from `opus[1m]` to `opus`.)
+
 **5. Sign in to Tailscale.** Tailscale is the private network that connects your phone to your computer. It installs Tailscale and opens the sign-in. **Sign in with the same account on your computer and on your phone.** This is the single most important step. If your computer and phone are on two different Tailscale accounts, they can't see each other and nothing works.
 
 **6. Install the portal.** It sets up the portal and makes it start on its own whenever your computer boots. If it ever crashes, it restarts itself. You don't have to babysit it.
