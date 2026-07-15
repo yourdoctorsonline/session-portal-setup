@@ -377,7 +377,7 @@ textarea{font:13px/1.5 ui-monospace,Menlo,monospace;min-height:52vh;resize:verti
 <div class="toast" id="toast"></div>
 <script>
 const $=s=>document.querySelector(s);let view='sessions',cwd=null,repoList=[];
-const HOME_DIR=__HOME__, WS_DIR=__WS__;   // injected server-side for picker chips
+const HOME_DIR=__HOME__, WS_DIR=__WS__, AOS_DIR=__AOS__;   // injected server-side for picker chips
 let pcur=null;                            // folder picker's current browse path
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),1800)}
 async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await r.text());return r.json()}
@@ -488,7 +488,7 @@ async function renderPicker(){
   const box=$('#psheetInner');
   box.innerHTML='<div class="grab"></div><h2>Choose folder</h2><div class="muted">Loading…</div>';
   let d;try{d=await api('/api/ls?path='+encodeURIComponent(pcur||''));}catch(e){d={error:e.message};}
-  const chips=[['🏠 Home',HOME_DIR],['💾 Volumes','/Volumes'],['📦 Workspace',WS_DIR]]
+  const chips=[['✦ agentic-os',AOS_DIR],['🏠 Home',HOME_DIR],['💾 Volumes','/Volumes'],['📦 Workspace',WS_DIR]]
     .map(c=>`<button class="chip" data-p="${esc(c[1])}">${esc(c[0])}</button>`).join('');
   const cur=d.path||pcur;
   let list;
@@ -615,11 +615,19 @@ class H(BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(u.query)
         if u.path == "/":
             # Inject the machine's own paths so the folder picker's quick-jump
-            # chips (Home / Volumes / Workspace) know where to point without an
-            # extra round-trip.
+            # chips (Home / Volumes / Workspace / agentic-os) know where to point
+            # without an extra round-trip.
             ws = load_env("WORKSPACE_ROOT") or os.path.join(HOME, "repos")
+            # Best guess at the agentic-os folder so non-technical users get a
+            # one-tap chip instead of hunting for a path: WORKSPACE_ROOT/agentic-os
+            # if it's there, else the saved default folder, else the workspace.
+            aos = os.path.join(ws, "agentic-os")
+            if not os.path.isdir(aos):
+                dc = get_default_cwd()
+                aos = dc if dc and dc != HOME else ws
             page = (PAGE.replace("__HOME__", json.dumps(HOME))
-                        .replace("__WS__", json.dumps(ws)))
+                        .replace("__WS__", json.dumps(ws))
+                        .replace("__AOS__", json.dumps(aos)))
             body = page.encode()
             self.send_response(200)
             self.send_header("content-type", "text/html; charset=utf-8")

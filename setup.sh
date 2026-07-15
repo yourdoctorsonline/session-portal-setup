@@ -148,6 +148,26 @@ creds_ok() {
   return 1
 }
 
+# find_agentic_os — echo the path to an agentic-os git repo if one can be found
+# in the usual spots, so non-technical users never have to know or type a path.
+# Empty if none found. Checks common locations first (fast), then a shallow
+# bounded search under HOME and mounted volumes.
+find_agentic_os() {
+  local d
+  for d in "$HOME/repos/agentic-os" "$HOME/agentic-os" "$HOME/Documents/agentic-os" \
+           "$HOME/Desktop/agentic-os" "$HOME/Developer/agentic-os" "$HOME/code/agentic-os" \
+           "$HOME/projects/agentic-os"; do
+    [ -d "$d/.git" ] && { printf '%s' "$d"; return 0; }
+  done
+  # Only match dirs that are actually git repos (a bare `-name agentic-os | head`
+  # can land on an empty stub folder and miss the real repo deeper down).
+  d="$(find "$HOME" /Volumes -maxdepth 4 -type d -name agentic-os \
+        -not -path '*/node_modules/*' -not -path '*/.Trash/*' \
+        -exec sh -c '[ -d "$1/.git" ]' _ {} \; -print 2>/dev/null | head -1)"
+  [ -n "$d" ] && { printf '%s' "$d"; return 0; }
+  return 1
+}
+
 # setup_backup — ensure the user's agentic-os repo is backed up to a PRIVATE repo
 # on their OWN GitHub (outside any org), if it isn't already. Uses gh to create a
 # private repo named `agentic-os`, wires it as the `backup` remote, and pushes.
@@ -216,7 +236,7 @@ apply_orchestrator_defaults() {
 import json, os, sys
 f = sys.argv[1]
 d = json.load(open(f)) if os.path.exists(f) else {}
-d["model"] = "opus[1m]"; d["effortLevel"] = "ultracode"
+d["model"] = "opus"; d["effortLevel"] = "ultracode"  # plain 'opus' = Opus 4.8, works for everyone; opus[1m] needs 1M-context access most accounts lack
 json.dump(d, open(f, "w"), indent=2); open(f, "a").write("\n")
 PY
     # Sonnet-subagent routing instruction (no hard switch exists — this is it)
@@ -694,15 +714,40 @@ fi
 
 # ---- STEP 6b: workspace folder (AC-TI-009) ----------------------------------
 step_banner 7 "Choosing your projects folder"
-CUR_WS=""
-[ -f "$ENV_FILE" ] && CUR_WS="$(grep '^WORKSPACE_ROOT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
-ask WSROOT "Where do your project folders live?" "${CUR_WS:-$HOME/repos}"
+
+# Try to find agentic-os automatically so non-technical folks don't have to hunt
+# for a path. If we find it, use it as the default launch folder and set the
+# workspace to its parent — they just press Enter.
+DEF_CWD=""
+say "  Looking for your agentic-os folder…"
+AOS="$(find_agentic_os || true)"
+if [ -n "$AOS" ]; then
+  ok "Found it: $AOS"
+  ask KEEP_AOS "Use this folder for your sessions? (Y/n)" "Y"
+  case "$KEEP_AOS" in n|N|no|No|NO) AOS="" ;; esac
+fi
+
+if [ -n "$AOS" ]; then
+  WSROOT="$(dirname "$AOS")"
+  DEF_CWD="$AOS"
+else
+  CUR_WS=""
+  [ -f "$ENV_FILE" ] && CUR_WS="$(grep '^WORKSPACE_ROOT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+  say "  (Couldn't find it automatically — no worries.)"
+  ask WSROOT "Where do your project folders live?" "${CUR_WS:-$HOME/repos}"
+  DEF_CWD="$WSROOT/agentic-os"; [ -d "$DEF_CWD" ] || DEF_CWD="$WSROOT"
+fi
+
 run "creating $WSROOT" mkdir -p "$WSROOT"
 if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
-  say "DRYRUN: would save WORKSPACE_ROOT=$WSROOT to $ENV_FILE"
+  say "DRYRUN: would save WORKSPACE_ROOT=$WSROOT and default launch folder=$DEF_CWD"
 else
   upsert_env WORKSPACE_ROOT "$WSROOT" "$ENV_FILE"
-  ok "Saved your projects folder: $WSROOT"
+  # THE FIX: also seed the launcher's default launch folder, so the New Session
+  # sheet opens pointed at this folder instead of falling back to your home dir.
+  printf '%s' "$DEF_CWD" > "$LAUNCHER_DIR/default-cwd" 2>/dev/null || true
+  ok "Projects folder: $WSROOT"
+  ok "New sessions will open in: $DEF_CWD"
 fi
 
 # ---- Private backup of agentic-os -------------------------------------------
