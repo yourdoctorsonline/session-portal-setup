@@ -7,10 +7,15 @@ Session Launcher is a web page that runs on your own computer and lets you start
 On a Mac, open Terminal and run:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)
 ```
 
 The setup asks you a few questions and handles the rest.
+
+> Use `bash <(curl …)` rather than `curl … | bash`. The setup asks you a few
+> things (your Mac password if it installs Homebrew, the Claude sign-in), and
+> this form keeps your keyboard wired straight to the installer so those prompts
+> work smoothly.
 
 ## What it sets up
 

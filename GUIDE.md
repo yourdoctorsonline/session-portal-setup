@@ -30,10 +30,15 @@ Mac users can skip all of this.
 Open your Terminal (on a Mac) or the Ubuntu window (on Windows), paste this in, and press Enter:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)
 ```
 
 That's it. From here the setup asks you questions and does the work. Here's what each step does so nothing catches you off guard.
+
+> **Why `bash <(curl …)` and not `curl … | bash`?** The setup has to ask you a
+> couple of things — your Mac password (if it needs to install Homebrew) and
+> your Claude sign-in. The form above keeps your keyboard wired straight to the
+> installer, so those prompts work smoothly instead of looking like a freeze.
 
 ## What the setup will do
 
@@ -56,10 +61,16 @@ That's it. From here the setup asks you questions and does the work. Here's what
 ## On your phone
 
 1. Open the link the setup printed. The quickest way is to scan the QR code with your phone's camera.
-2. Once the portal loads, tap the **Share** button.
-3. Tap **Add to Home Screen.**
+2. Add it to your home screen so it opens like an app:
+   - **iPhone (Safari):** tap the **Share** button, then **Add to Home Screen.**
+   - **Android (Chrome):** tap the **⋮** menu (top-right), then **Add to Home screen** (or **Install app**).
 
 Now the portal has its own icon on your phone, like an app.
+
+> **On Windows/WSL only:** the portal lives inside WSL, which shuts down when you
+> close every Ubuntu window. To keep it reachable, leave one Ubuntu window open
+> (or set WSL to start on boot via Task Scheduler), and keep the PC awake — same
+> as a Mac laptop needs to stay awake and plugged in.
 
 ## If something isn't working
 
