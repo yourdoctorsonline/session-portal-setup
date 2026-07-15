@@ -130,6 +130,25 @@ upsert_env() {
 have()     { command -v "$1" >/dev/null 2>&1; }
 creds_ok() { [ -f "$1/.credentials.json" ]; }
 
+# claude_signin [CONFIG_DIR] — run `claude` interactively for sign-in with stdio
+# that WON'T crash. Newer Bun-based claude builds throw
+# `TypeError: undefined is not an object (evaluating 'process.stderr.fd')` when
+# stdout/stderr are shell-redirected to /dev/tty (as `> /dev/tty 2>&1` does).
+# When we already have a real terminal on stdout, let claude inherit it (fd 1/2
+# stay real TTYs → no crash) and only take stdin from /dev/tty. The full
+# /dev/tty redirect is kept solely as a fallback for `curl | bash`, where stdout
+# is the pipe and claude has no terminal otherwise.
+claude_signin() {
+  local cfg="${1:-}"
+  if [ -t 1 ]; then
+    if [ -n "$cfg" ]; then CLAUDE_CONFIG_DIR="$cfg" claude < /dev/tty
+    else claude < /dev/tty; fi
+  else
+    if [ -n "$cfg" ]; then CLAUDE_CONFIG_DIR="$cfg" claude < /dev/tty > /dev/tty 2>&1
+    else claude < /dev/tty > /dev/tty 2>&1; fi
+  fi
+}
+
 # tsip — first line of `tailscale ip -4`, probing the usual install locations
 # because a piped-in installer inherits a bare PATH.
 tsip() {
@@ -367,7 +386,7 @@ else
   say "Claude will open now. Sign in, then type  /exit  to come back here."
   say "(Press Enter when you're ready.)"
   read -r _ < /dev/tty 2>/dev/null || true
-  claude < /dev/tty > /dev/tty 2>&1 || true
+  claude_signin || true
   if creds_ok "$HOME/.claude"; then
     ok "Signed in to Claude."
   else
@@ -398,7 +417,7 @@ while : ; do
     continue
   fi
   say "Claude will open for '$ACC_NAME'. Sign in with THAT account, then type /exit."
-  CLAUDE_CONFIG_DIR="$ACC_DIR" claude < /dev/tty > /dev/tty 2>&1 || true
+  claude_signin "$ACC_DIR" || true
   if creds_ok "$ACC_DIR"; then
     ok "'$ACC_NAME' signed in."
   else
