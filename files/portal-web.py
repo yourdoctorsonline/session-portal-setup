@@ -187,6 +187,33 @@ def launch_session(name, account, perm, cwd):
         return {"ok": True, "tmux": tmux_name}
     return {"ok": False, "error": out.strip() or "launch failed"}
 
+def launch_shell(name, cwd):
+    """Open a plain terminal (the user's login shell) in a tmux session — no
+    Claude, no account. Same cwd-accessibility rules as launch_session: a chosen
+    folder that can't be reached is an explicit error, not a silent home fallback."""
+    name = (name or "").strip()
+    if cwd:
+        if not os.path.isdir(cwd):
+            return {"ok": False, "error": f"Can't open folder: {cwd} — not accessible (permission or not mounted)."}
+        run_cwd = cwd
+    else:
+        run_cwd = HOME
+    base = re.sub(r"[^A-Za-z0-9_-]", "-", name).strip("-") if name else ""
+    tmux_name = base or "shell-" + time.strftime("%H%M%S")
+    uniq, n = tmux_name, 2
+    while subprocess.run([TMUX, "has-session", "-t", f"={uniq}"], capture_output=True).returncode == 0:
+        uniq = f"{tmux_name}-{n}"; n += 1
+    shell = os.environ.get("SHELL") or "/bin/bash"
+    try:
+        r = subprocess.run([TMUX, "new-session", "-d", "-x", "200", "-y", "50",
+                            "-s", uniq, "-c", run_cwd, shell],
+                           capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    if r.returncode != 0:
+        return {"ok": False, "error": (r.stderr or r.stdout).strip() or "shell launch failed"}
+    return {"ok": True, "tmux": uniq}
+
 def kill_session(name):
     """Kill one session, and only that one.
 
@@ -411,27 +438,40 @@ async function openLaunch(){
   let accts=['default'];try{accts=(await api('/api/accounts')).accounts||accts}catch(e){}
   let def=HOME_DIR;try{def=(await api('/api/default-cwd')).path||def}catch(e){}
   const acctBtns=accts.map((a,i)=>`<button class="${i===0?'on':''}" data-v="${esc(a)}" onclick="segpick(this)">${esc(a)}</button>`).join('');
-  sheet(`<h2>New Claude session</h2>
+  sheet(`<h2>New session</h2>
+    <label>Type</label><div class="seg" id="l_kind">
+      <button class="on" data-v="claude" onclick="segpick(this);kindPick()">✦ Claude</button>
+      <button data-v="shell" onclick="segpick(this);kindPick()">▹ Plain shell</button></div>
     <label>Name</label><input id="l_name" placeholder="my task" autocapitalize="off">
     <label>Folder to run in</label>
     <div class="pickrow" onclick="openFolderPicker()"><span class="ic">📁</span><span class="pth" id="l_cwd_label">${esc(def)}</span><span class="go">Browse ›</span></div>
     <input type="hidden" id="l_cwd" value="${esc(def)}">
-    <label>Account</label><div class="seg" id="l_acct">${acctBtns}</div>
-    <label>Permissions</label><div class="seg" id="l_perm">
-      <button class="on" data-v="auto" onclick="segpick(this)">auto</button>
-      <button data-v="bypass" onclick="segpick(this)">bypass</button></div>
-    <div class="small" style="margin-top:8px">"default" is your main Claude sign-in; other accounts you added appear by name.</div>
+    <div id="l_claudeonly">
+      <label>Account</label><div class="seg" id="l_acct">${acctBtns}</div>
+      <label>Permissions</label><div class="seg" id="l_perm">
+        <button class="on" data-v="auto" onclick="segpick(this)">auto</button>
+        <button data-v="bypass" onclick="segpick(this)">bypass</button></div>
+      <div class="small" style="margin-top:8px">"default" is your main Claude sign-in; other accounts you added appear by name.</div>
+    </div>
     <button class="btn" id="l_go" onclick="doLaunch()">Launch &amp; open</button>
     <button class="btn sec" onclick="closeSheet()">Cancel</button>`);
+}
+// Plain shell needs no account/permissions — hide them and relabel the button.
+function kindPick(){
+  const shell=segval('l_kind')==='shell';
+  const co=$('#l_claudeonly'); if(co)co.style.display=shell?'none':'';
+  $('#l_go').textContent=shell?'Open shell':'Launch & open';
 }
 function segpick(b){[...b.parentNode.children].forEach(x=>x.classList.remove('on'));b.classList.add('on')}
 function segval(id){const e=$('#'+id+' .on');return e?e.dataset.v:''}
 async function doLaunch(){
-  const body={name:$('#l_name').value,cwd:$('#l_cwd').value,account:segval('l_acct'),perm:segval('l_perm')};
-  $('#l_go').textContent='Launching…';$('#l_go').disabled=true;
+  const kind=segval('l_kind')||'claude';
+  const label=kind==='shell'?'Open shell':'Launch & open';
+  const body={kind:kind,name:$('#l_name').value,cwd:$('#l_cwd').value,account:segval('l_acct'),perm:segval('l_perm')};
+  $('#l_go').textContent=kind==='shell'?'Opening…':'Launching…';$('#l_go').disabled=true;
   try{const r=await api('/api/launch',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
-    if(r.ok){location.href='/term?s='+encodeURIComponent(r.tmux)}else{toast(r.error||'failed');$('#l_go').textContent='Launch & open';$('#l_go').disabled=false}
-  }catch(e){toast(e.message);$('#l_go').textContent='Launch & open';$('#l_go').disabled=false}
+    if(r.ok){location.href='/term?s='+encodeURIComponent(r.tmux)}else{toast(r.error||'failed');$('#l_go').textContent=label;$('#l_go').disabled=false}
+  }catch(e){toast(e.message);$('#l_go').textContent=label;$('#l_go').disabled=false}
 }
 function sheet(h){$('#sheetInner').innerHTML='<div class="grab"></div>'+h;$('#sheet').classList.add('on')}
 function closeSheet(){$('#sheet').classList.remove('on')}
@@ -614,7 +654,10 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             return self._json({"ok": False, "error": "bad body"}, 400)
         if u.path == "/api/launch":
-            self._json(launch_session(b.get("name"), b.get("account"), b.get("perm"), b.get("cwd")))
+            if b.get("kind") == "shell":
+                self._json(launch_shell(b.get("name"), b.get("cwd")))
+            else:
+                self._json(launch_session(b.get("name"), b.get("account"), b.get("perm"), b.get("cwd")))
         elif u.path == "/api/default-cwd":
             self._json(set_default_cwd(b.get("path", "")))
         elif u.path == "/api/kill":
