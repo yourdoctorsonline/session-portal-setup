@@ -30,10 +30,16 @@ Mac users can skip all of this.
 Open your Terminal (on a Mac) or the Ubuntu window (on Windows), paste this in, and press Enter:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)
 ```
 
 That's it. From here the setup asks you questions and does the work. Here's what each step does so nothing catches you off guard.
+
+> **Why `bash <(curl …)` and not `curl … | bash`?** The setup has to ask you a
+> couple of things — your Mac password (so Homebrew can install) and your Claude
+> sign-in. Piping the script into `bash` gives your keyboard to the download
+> instead of the installer, so those prompts never reach you and it looks like
+> it froze. The form above keeps your keyboard connected to the installer.
 
 ## What the setup will do
 

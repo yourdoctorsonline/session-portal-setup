@@ -142,6 +142,30 @@ tsip() {
   "$ts" ip -4 2>/dev/null | head -1
 }
 
+# brew_bin — path to an installed Homebrew, or empty. Probes the standard
+# Apple-Silicon / Intel locations, NOT just PATH: a `curl … | bash` installer
+# runs with a bare PATH that omits /opt/homebrew/bin, so a plain `command -v
+# brew` false-negatives on Macs that already have Homebrew — which then triggers
+# a doomed reinstall. (Same bare-PATH reason as tsip().)
+brew_bin() {
+  local b
+  b="$(command -v brew 2>/dev/null)" && { printf '%s' "$b"; return 0; }
+  for c in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+# claude_bin — path to the claude CLI, or empty. Probes ~/.local/bin (where the
+# official installer drops it) in addition to PATH, for the same bare-PATH
+# reason — otherwise an already-installed claude gets needlessly reinstalled.
+claude_bin() {
+  local c
+  c="$(command -v claude 2>/dev/null)" && { printf '%s' "$c"; return 0; }
+  [ -x "$HOME/.local/bin/claude" ] && { printf '%s' "$HOME/.local/bin/claude"; return 0; }
+  return 1
+}
+
 # --- sourcing guard: the test harness stops here -----------------------------
 if [ "${SETUP_LIB_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
@@ -219,20 +243,38 @@ fi
 # ---- STEP 2: basics (package tools) -----------------------------------------
 step_banner 2 "Installing the basic tools"
 if [ "$PLATFORM" = "mac" ]; then
-  if ! have brew; then
-    say "Installing Homebrew (the tool that installs other tools)..."
-    run "installing Homebrew" /bin/bash -c \
-      "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    # bring brew onto PATH for the rest of this run (Apple Silicon vs Intel)
-    if [ "${SETUP_DRYRUN:-0}" != "1" ]; then
-      if [ -x /opt/homebrew/bin/brew ]; then
-        eval "$(/opt/homebrew/bin/brew shellenv)"
-      elif [ -x /usr/local/bin/brew ]; then
-        eval "$(/usr/local/bin/brew shellenv)"
-      fi
-    fi
-  else
+  BREW="$(brew_bin || true)"
+  if [ -n "$BREW" ]; then
+    # Already installed — just bring it onto PATH for the rest of this run.
+    [ "${SETUP_DRYRUN:-0}" = "1" ] || eval "$("$BREW" shellenv)"
     ok "Homebrew already installed."
+  elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+    say "DRYRUN: would install Homebrew"
+  else
+    say "Installing Homebrew (the tool that installs other tools)..."
+    # Homebrew's own installer needs a real terminal for its password prompt
+    # (you must be an admin on this Mac). A `curl … | bash` pipe leaves stdin as
+    # the pipe, so Homebrew goes non-interactive and dies on "Need sudo access."
+    # Feed it /dev/tty so it can prompt. If there's no controlling terminal at
+    # all (can't even open /dev/tty), we can't install it — bail with
+    # instructions instead of failing cryptically three commands later.
+    if ( exec < /dev/tty ) 2>/dev/null; then
+      run "installing Homebrew" /bin/bash -c \
+        "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" < /dev/tty
+    fi
+    BREW="$(brew_bin || true)"
+    if [ -n "$BREW" ]; then
+      eval "$("$BREW" shellenv)"
+      ok "Homebrew installed."
+    else
+      fail_msg "Homebrew isn't installed, and I couldn't install it automatically."
+      say "Install it yourself (you'll need to be an admin on this Mac), then re-run me:"
+      say '  1. Open the Terminal app.'
+      say '  2. Paste this and press Enter, then type your Mac password when asked:'
+      say '     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+      say '  3. Re-run this installer.'
+      exit 1
+    fi
   fi
   for tool in tmux ttyd qrencode; do
     if have "$tool"; then
@@ -260,8 +302,18 @@ elif [ "$PLATFORM" = "wsl" ]; then
 fi
 
 # ---- STEP 3: Claude Code install + login ------------------------------------
+# Claude Code is installed because the portal's whole job is to launch
+# `claude --remote-control` sessions — without the CLI there's nothing to run.
+# We detect an existing install via ~/.local/bin (not just PATH) so teammates
+# who already use Claude Code aren't put through a pointless reinstall. The
+# interactive sign-in is a separate step below.
 step_banner 3 "Installing Claude Code and signing in"
-if have claude; then
+if [ -n "$(claude_bin || true)" ]; then
+  # make sure it's on PATH for the sign-in step and the launcher's checks
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) : ;;
+    *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
+  esac
   ok "Claude Code already installed."
 else
   say "Installing Claude Code..."
