@@ -13,6 +13,14 @@
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- ttyd 1.7.7 leaks a pty master fd per terminal; launchd's default soft
+       limit of 256 is hit in about a day, after which every new terminal fails
+       with EMFILE. Raise the ceiling to 4096; fd-watchdog.sh recycles ttyd
+       before it gets anywhere near it. -->
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key><integer>4096</integer>
+  </dict>
   <key>StandardOutPath</key><string>__HOME__/.claude-launcher/terminal.log</string>
   <key>StandardErrorPath</key><string>__HOME__/.claude-launcher/terminal.log</string>
 </dict>
