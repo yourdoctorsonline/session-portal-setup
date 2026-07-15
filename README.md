@@ -12,10 +12,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-po
 
 The setup asks you a few questions and handles the rest.
 
-> Use `bash <(curl …)`, not `curl … | bash`. The setup needs to ask you things
-> (your Mac password for Homebrew, the Claude sign-in), and piping into `bash`
-> hands your keyboard to the pipe instead of the installer, so those prompts
-> can't reach you.
+> Use `bash <(curl …)` rather than `curl … | bash`. The setup asks you a few
+> things (your Mac password if it installs Homebrew, the Claude sign-in), and
+> this form keeps your keyboard wired straight to the installer so those prompts
+> work smoothly.
 
 ## What it sets up
 

@@ -283,21 +283,54 @@ if [ "$PLATFORM" = "mac" ]; then
       run "installing $tool" brew install "$tool"
     fi
   done
-elif [ "$PLATFORM" = "wsl" ]; then
-  MISSING=""
-  for tool in tmux ttyd python3 qrencode; do
-    have "$tool" || MISSING="$MISSING $tool"
-  done
-  if [ -n "$MISSING" ]; then
-    run "updating package lists" sudo apt-get update -qq
-    run "installing$MISSING" sudo apt-get install -y $MISSING
+  # Homebrew python specifically — NOT Apple's /usr/bin/python3. The dashboard
+  # service runs the portal under Homebrew python because Apple's python is
+  # sandboxed by macOS privacy (TCC) away from external volumes, which silently
+  # breaks browsing/launching for a workspace on an external drive. `have python3`
+  # is always true on macOS (the Apple shim), so check for the Homebrew binary.
+  if [ -x "$(brew --prefix 2>/dev/null)/bin/python3" ]; then
+    ok "python already installed."
   else
-    ok "tmux, ttyd, python3, qrencode already installed."
+    run "installing python" brew install python
   fi
-  if ! have ttyd; then
-    warn "ttyd still isn't available from apt on this system."
-    say "Try installing it via snap instead, then re-run me:"
-    say "  sudo snap install ttyd --classic"
+elif [ "$PLATFORM" = "wsl" ]; then
+  # Install per-package, NOT one atomic `apt-get install tmux ttyd python3 qrencode`:
+  # on Ubuntu releases where ttyd isn't packaged, an atomic install aborts and
+  # leaves ALL of them missing. A loop lets ttyd's absence fail on its own while
+  # tmux/python3/qrencode still install.
+  APT_UPDATED=0
+  for tool in tmux python3 qrencode; do
+    if have "$tool"; then
+      ok "$tool already installed."
+    else
+      [ "$APT_UPDATED" = "1" ] || { run "updating package lists" sudo apt-get update -qq; APT_UPDATED=1; }
+      run "installing $tool" sudo apt-get install -y "$tool"
+    fi
+  done
+  # ttyd often isn't in apt. Try apt first; if that fails, drop the official
+  # static binary into ~/.local/bin (which portal.sh already has on PATH).
+  if have ttyd; then
+    ok "ttyd already installed."
+  else
+    [ "$APT_UPDATED" = "1" ] || { run "updating package lists" sudo apt-get update -qq; APT_UPDATED=1; }
+    sudo apt-get install -y ttyd 2>/dev/null || true
+    if ! have ttyd; then
+      say "  ttyd isn't in apt here — fetching the official static binary..."
+      ARCH="$(uname -m)"; case "$ARCH" in aarch64|arm64) TARCH="aarch64" ;; *) TARCH="x86_64" ;; esac
+      mkdir -p "$HOME/.local/bin"
+      if curl -fsSL "https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.${TARCH}" \
+           -o "$HOME/.local/bin/ttyd" 2>/dev/null && [ -s "$HOME/.local/bin/ttyd" ]; then
+        chmod +x "$HOME/.local/bin/ttyd"
+        case ":$PATH:" in *":$HOME/.local/bin:"*) : ;; *) PATH="$HOME/.local/bin:$PATH"; export PATH ;; esac
+        ok "ttyd installed to ~/.local/bin."
+      else
+        fail_msg "Couldn't install ttyd automatically."
+        say "Install it yourself, then re-run me:"
+        say "  sudo snap install ttyd --classic    # (needs systemd; see below)"
+        say "  — or download a static build from https://github.com/tsl0922/ttyd/releases into ~/.local/bin/ttyd"
+        exit 1
+      fi
+    fi
   fi
 fi
 
@@ -376,12 +409,17 @@ done
 # ---- STEP 5: Tailscale (AC-TI-007) ------------------------------------------
 step_banner 5 "Setting up Tailscale (your private network)"
 if [ "$PLATFORM" = "mac" ]; then
+  # Install the Homebrew FORMULA (CLI + tailscaled daemon), NOT `--cask tailscale`:
+  # the cask is the GUI app only and ships NO `tailscale` command, so every step
+  # below (tsip, `tailscale up`) would fail and the connect loop would time out.
   if ! have tailscale; then
-    run "installing Tailscale" brew install --cask tailscale
+    run "installing Tailscale" brew install tailscale
   else
     ok "Tailscale already installed."
   fi
-  run "opening Tailscale" open -a Tailscale
+  # Start tailscaled as a background service (one-time sudo). `tailscale up`
+  # below then brings the connection up.
+  run "starting Tailscale" sudo brew services start tailscale
 elif [ "$PLATFORM" = "wsl" ]; then
   if ! have tailscale; then
     run "installing Tailscale" /bin/bash -c "curl -fsSL https://tailscale.com/install.sh | sh"
@@ -392,10 +430,12 @@ elif [ "$PLATFORM" = "wsl" ]; then
   if [ "${SETUP_DRYRUN:-0}" != "1" ] && ! systemctl --user show-environment >/dev/null 2>&1 \
        && ! systemctl is-system-running >/dev/null 2>&1; then
     warn "WSL needs systemd turned on before Tailscale can run."
-    run "enabling systemd in WSL" sudo tee /etc/wsl.conf >/dev/null <<'WSLCONF'
-[boot]
-systemd=true
-WSLCONF
+    # APPEND (don't truncate) so we never wipe an existing wsl.conf ([automount]/
+    # [network]/[user] etc.). Only add it if systemd=true isn't already set.
+    if ! grep -qs "systemd=true" /etc/wsl.conf; then
+      printf '\n[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf >/dev/null \
+        && ok "enabled systemd in WSL"
+    fi
     say ""
     say "Almost there — one quick restart of WSL is needed:"
     say "  1. Open PowerShell and run:  wsl --shutdown"
@@ -408,6 +448,9 @@ fi
 
 # bring the connection up if we don't have an IP yet
 if [ -z "$(tsip)" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+  say ""
+  say "Tailscale will print a ${C_BOLD}https://login.tailscale.com/…${C_RESET} link next."
+  say "Open it in a browser and sign in — then it continues here automatically."
   run "connecting to Tailscale" sudo tailscale up
 fi
 
@@ -455,6 +498,10 @@ fi
 if [ "$PLATFORM" = "mac" ]; then
   LA_DIR="$HOME/Library/LaunchAgents"
   run "creating $LA_DIR" mkdir -p "$LA_DIR"
+  # Absolute Homebrew python for the dashboard plist (see the template comment):
+  # prefer the brew-prefix python, fall back to whatever python3 is on PATH.
+  PYBIN="$(brew --prefix 2>/dev/null)/bin/python3"
+  [ -x "$PYBIN" ] || PYBIN="$(command -v python3 || echo /usr/bin/python3)"
   for label in com.sessionlauncher.terminal com.sessionlauncher.dashboard com.sessionlauncher.watchdog; do
     TPL="$SRC/templates/$label.plist.template"
     PLIST="$LA_DIR/$label.plist"
@@ -466,7 +513,7 @@ if [ "$PLATFORM" = "mac" ]; then
       warn "Template $TPL missing — skipping $label."
       continue
     fi
-    sed "s|__HOME__|$HOME|g" "$TPL" > "$PLIST"
+    sed -e "s|__HOME__|$HOME|g" -e "s|__PYTHON__|$PYBIN|g" "$TPL" > "$PLIST"
     launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
     launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null \
       && ok "Loaded $label" \
@@ -487,6 +534,12 @@ elif [ "$PLATFORM" = "wsl" ]; then
     systemctl --user enable --now session-terminal session-dashboard session-watchdog.timer 2>/dev/null \
       && ok "Portal services enabled" \
       || warn "Couldn't enable the portal services automatically."
+    # Keep the --user services (and thus the portal) running after the Ubuntu
+    # window closes. Without linger, per-user systemd stops at logout and WSL2
+    # tears the whole VM down seconds later — the portal would vanish. Note: for
+    # true 24/7 you also want WSL to auto-start on boot and the PC not to sleep
+    # (see GUIDE.md).
+    run "keeping the portal running in the background" sudo loginctl enable-linger "$(id -un)"
     # Re-runs land the raised LimitNOFILE on an already-running terminal. Safe:
     # tmux sessions belong to the tmux server and survive a ttyd restart. no-op
     # when the unit isn't running yet (a fresh install already started it above).

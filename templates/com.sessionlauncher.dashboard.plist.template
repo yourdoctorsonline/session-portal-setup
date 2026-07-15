@@ -1,17 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- macOS launchd agent: keeps the Session Launcher web dashboard running.
-     Runs portal-web.py (via python3) at login and restarts it if it exits.
-     The EnvironmentVariables PATH is set because portal-web.py shells out to
-     tmux/tailscale. The literal __HOME__ placeholder is sed-replaced with the
-     installing user's home directory, so this template stays username-generic. -->
+     Runs portal-web.py at login and restarts it if it exits. The __PYTHON__
+     placeholder is sed-replaced with the absolute Homebrew python path (NOT
+     Apple's /usr/bin/python3 — that one is sandboxed by macOS privacy away from
+     external volumes, which silently breaks browsing a workspace on an external
+     drive). __HOME__ is sed-replaced with the installing user's home directory,
+     so this template stays username-generic. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.sessionlauncher.dashboard</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string>
-    <string>python3</string>
+    <string>__PYTHON__</string>
     <string>__HOME__/.claude-launcher/bin/portal-web.py</string>
   </array>
   <key>EnvironmentVariables</key>

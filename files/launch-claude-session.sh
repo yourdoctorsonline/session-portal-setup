@@ -2,22 +2,20 @@
 # launch-claude-session.sh
 # -----------------------------------------------------------------------------
 # Launch a new REMOTE-CONTROL Claude Code session in a chosen working directory,
-# inside a detached tmux session, using one of the two account configs.
+# inside a detached tmux session, under a chosen account config.
 #
-# This mirrors the claude-personal / claude-ydo zsh functions in ~/.zshrc, but:
-#   - targets a chosen working directory via LAUNCH_CWD (default: the agentic-os
-#     repo; the aliases don't cd)
+#   - targets a chosen working directory via LAUNCH_CWD (default: the user's home)
 #   - names the session (tmux name AND Claude's --remote-control name) with what
 #     you typed, so it's identifiable in the Claude mobile app
 #   - never attaches (headless), so it can be driven remotely instead of locally
+#   - defaults the effort to ultracode (override per launch with LAUNCH_EFFORT)
 #
 # The --remote-control flag is what exposes the running session for control from
-# the Claude mobile app (and the in-app terminal) — the same mechanism the
-# aliases use, just named and pointed at the chosen directory.
+# the Claude mobile app (and the in-app terminal).
 #
 # Usage:
 #   launch-claude-session.sh <account> <perm> [session name...]
-#     account : personal | ydo
+#     account : default | <name>  (default = plain ~/.claude; <name> = ~/.claude-<name>)
 #     perm    : auto | bypass
 #     name    : free-text session name (may contain spaces); optional
 #
