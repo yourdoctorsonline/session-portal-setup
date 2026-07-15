@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd agent: hourly one-way backup of agentic-os to your PRIVATE
+     mirror. Runs backup-agentic-os.sh, which force-pushes a snapshot to the
+     `backup` remote and never merges/pulls — so it cannot conflict, and it
+     no-ops until setup has wired a `backup` remote. __HOME__ is sed-replaced. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.sessionlauncher.backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HOME__/.claude-launcher/bin/backup-agentic-os.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>StandardOutPath</key><string>__HOME__/.claude-launcher/backup.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.claude-launcher/backup.log</string>
+</dict>
+</plist>

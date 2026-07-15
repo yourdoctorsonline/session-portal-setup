@@ -1,0 +1,6 @@
+[Unit]
+Description=One-way private backup of agentic-os (snapshot force-push, never merges)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash %h/.claude-launcher/bin/backup-agentic-os.sh
