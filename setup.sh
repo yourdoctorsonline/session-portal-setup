@@ -128,7 +128,20 @@ upsert_env() {
 }
 
 have()     { command -v "$1" >/dev/null 2>&1; }
-creds_ok() { [ -f "$1/.credentials.json" ]; }
+creds_ok() {
+  # Is this account signed in? Named config dirs (and all of Linux) keep the
+  # login in a .credentials.json file. But the DEFAULT account on macOS stores
+  # it in the login Keychain (service "Claude Code-credentials") with NO file —
+  # so a file-only check false-negatives even right after a successful sign-in,
+  # and this installer would loop through Step 3 forever (and, before the stdio
+  # fix, crash there). Check the Keychain too for the default account. No `-w`
+  # means we only test existence — no password is read and no prompt appears.
+  [ -f "$1/.credentials.json" ] && return 0
+  if [ "$(uname -s)" = "Darwin" ] && [ "$1" = "$HOME/.claude" ]; then
+    security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
 
 # claude_signin [CONFIG_DIR] — run `claude` interactively for sign-in with stdio
 # that WON'T crash. Newer Bun-based claude builds throw
