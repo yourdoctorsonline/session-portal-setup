@@ -351,6 +351,10 @@ input,select,textarea{width:100%;background:var(--panel2);color:var(--ink);borde
 textarea{font:13px/1.5 ui-monospace,Menlo,monospace;min-height:52vh;resize:vertical;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
 .seg{display:flex;gap:6px;flex-wrap:wrap}.seg button{flex:1 1 90px;min-width:0;padding:11px;border-radius:10px;background:var(--panel2);color:var(--mut);border:1px solid var(--line);font-weight:600;font-size:14px}
 .seg button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+/* Type buttons carry a subtext line, so stack them */
+#l_kind button{display:flex;flex-direction:column;gap:3px;align-items:center;padding:11px 10px;line-height:1.2}
+.bsub{font-size:11px;font-weight:500;opacity:.82;white-space:normal;text-align:center}
+.lhint{font-weight:400;font-size:11px;color:var(--mut);opacity:.85}
 .btn{display:block;width:100%;padding:14px;border-radius:12px;background:var(--accent);color:#fff;border:none;font-size:16px;font-weight:700;margin-top:20px}
 .btn.sec{background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
 .sheet{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:30;display:none}
@@ -440,10 +444,10 @@ async function openLaunch(){
   const acctBtns=accts.map((a,i)=>`<button class="${i===0?'on':''}" data-v="${esc(a)}" onclick="segpick(this)">${esc(a)}</button>`).join('');
   sheet(`<h2>New session</h2>
     <label>Type</label><div class="seg" id="l_kind">
-      <button class="on" data-v="claude" onclick="segpick(this);kindPick()">✦ Claude</button>
-      <button data-v="shell" onclick="segpick(this);kindPick()">▹ Plain shell</button></div>
-    <label>Name</label><input id="l_name" placeholder="my task" autocapitalize="off">
-    <label>Folder to run in</label>
+      <button class="on" data-v="claude" onclick="segpick(this);kindPick()">✦ Claude<span class="bsub">to run your sessions</span></button>
+      <button data-v="shell" onclick="segpick(this);kindPick()">▹ Plain shell<span class="bsub">for terminal commands that aren't allowed in the Claude app</span></button></div>
+    <label>Name <span class="lhint">(your sessions show up under this name in the Claude app)</span></label><input id="l_name" placeholder="my task" autocapitalize="off">
+    <label>Folder to run in <span class="lhint">(keep it agentic-os unless your task needs a different folder)</span></label>
     <div class="pickrow" onclick="openFolderPicker()"><span class="ic">📁</span><span class="pth" id="l_cwd_label">${esc(def)}</span><span class="go">Browse ›</span></div>
     <input type="hidden" id="l_cwd" value="${esc(def)}">
     <div id="l_claudeonly">
