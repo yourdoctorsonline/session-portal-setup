@@ -549,11 +549,30 @@ iframe{border:0;width:100%;height:100%;display:block}
   text-decoration:none;-webkit-tap-highlight-color:transparent}
 #back:active{background:rgba(46,42,39,.92)}
 #back .a{font-size:17px;line-height:1}
+/* One-time orientation note so new folks aren't lost when the terminal opens:
+   they can keep working here OR carry on from the Claude app. Auto-fades; "Got
+   it" hides it for good (localStorage). */
+#hint{position:fixed;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));z-index:11;
+  max-width:560px;margin:0 auto;display:flex;align-items:center;gap:10px;
+  background:rgba(26,24,23,.94);backdrop-filter:blur(10px);border:1px solid #2e2a27;border-radius:14px;
+  padding:12px 14px;font:500 13px/1.45 -apple-system,system-ui,sans-serif;color:#efe9e2;
+  box-shadow:0 8px 28px rgba(0,0,0,.45);transition:opacity .4s}
+#hint.gone{opacity:0;pointer-events:none}
+#hint b{color:#e0556a}
+#hintx{flex:0 0 auto;background:#e0556a;color:#fff;border:none;border-radius:10px;padding:9px 13px;font:600 13px/1 inherit}
+#hintx:active{background:#c53b52}
 </style>
 </head><body>
 <a id="back" href="/" aria-label="Back to sessions"><span class="a">‹</span>Sessions</a>
 <iframe id="t" src="__SRC__" allow="clipboard-read;clipboard-write"></iframe>
+<div id="hint"><span>✦ Your session is live. Keep working right here in the terminal, or carry it on from the <b>Claude app</b> on your phone or computer — it's the same session, wherever you pick it up.</span><button id="hintx">Got it</button></div>
 <script>
+(function(){var h=document.getElementById('hint');if(!h)return;
+  if(localStorage.getItem('termHintDone')){h.style.display='none';return}
+  function hide(remember){h.classList.add('gone');if(remember){try{localStorage.setItem('termHintDone','1')}catch(e){}}setTimeout(function(){h.style.display='none'},420)}
+  document.getElementById('hintx').addEventListener('click',function(){hide(true)});
+  setTimeout(function(){hide(false)},15000);
+})();
 var f=document.getElementById('t'),away=0,last=0;
 // Every iframe reload makes ttyd spawn a fresh PTY, and ttyd 1.7.7 leaks the
 // descriptor. Reloading on blur/focus (which fire when you merely tap into the
