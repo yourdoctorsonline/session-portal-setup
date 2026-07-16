@@ -129,6 +129,16 @@ done
 # Unknown values are safe: claude warns and falls back to its default.
 EFFORT="${LAUNCH_EFFORT:-ultracode}"
 
+# Keep the session AUTONOMOUS. A launched session is remote-control (driven from
+# the phone), so the user is NOT at this machine's keyboard: Claude must DO the
+# work with its tools, not print commands for a human to run. Pinned in the
+# system prompt (strongest placement — survives a long session and re-anchors on
+# a fresh one). Note: --permission-mode/--dangerously-skip-permissions only
+# removes the *approval* gate; whether Claude actually calls a tool vs. prints
+# text is behavioral — this is what keeps it executing. Override or extend per
+# launch with LAUNCH_SYSTEM_PROMPT.
+EXEC_MODE_PROMPT="${LAUNCH_SYSTEM_PROMPT:-You are running in a remote-control session started from the Session Launcher. The user is driving you from a phone or another device and is away from this machine, so they cannot run anything by hand. Always DO the work yourself with your tools: run shell commands, file edits, git, and deploys via tool calls. NEVER print a block of commands or manual steps for the user to run; executing them yourself is the entire purpose of this session. If a task needs CLI / deploy / git steps, run them and report the outcome.}"
+
 # Inner command run inside the tmux pane. Absolute paths + explicit PATH make it
 # independent of how the outer shell was invoked. exec binds the pane lifetime
 # to Claude, so the tmux session ends when the session ends.
@@ -138,6 +148,7 @@ INNER="export PATH=$(printf '%q' "$EXTRA_PATH"):\$PATH; \
 ${CONFIG_EXPORT}\
 exec $(printf '%q' "$CLAUDE_BIN") --permission-mode $PERM_MODE \
 --effort $(printf '%q' "$EFFORT") \
+--append-system-prompt $(printf '%q' "$EXEC_MODE_PROMPT") \
 --name $(printf '%q' "$NAME") \
 --remote-control $(printf '%q' "$NAME")"
 
