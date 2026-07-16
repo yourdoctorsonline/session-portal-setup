@@ -49,6 +49,8 @@ That's it — the setup asks you a few questions and does the rest.
 
 `caveman` and `ponytail` are always on; the rest kick in when the work matches them.
 
+Launched sessions also run in **autonomous execution mode** — since you're driving them from your phone, they run commands and deploys themselves instead of printing a block of commands for you to run by hand.
+
 **Private backup of your work.** After you pick your projects folder, it checks whether your `agentic-os` is backed up to a repo you personally own. If not, it signs you into GitHub and creates a **private** repo `<you>/agentic-os` under your own account, then keeps it current with an hourly backup. This backup is **private to you** — the yourdoctorsonline org and your teammates can't see it. It only ever *pushes* a snapshot (including uncommitted work) one-way, so it never merges, never conflicts, and never touches your working branches.
 
 **5. Sign in to Tailscale.** Tailscale is the private network that connects your phone to your computer. It installs Tailscale and opens the sign-in. **Sign in with the same account on your computer and on your phone.** This is the single most important step. If your computer and phone are on two different Tailscale accounts, they can't see each other and nothing works.
