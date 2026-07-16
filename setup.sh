@@ -863,6 +863,31 @@ if [ "$PLATFORM" = "mac" ]; then
   # prefer the brew-prefix python, fall back to whatever python3 is on PATH.
   PYBIN="$(brew --prefix 2>/dev/null)/bin/python3"
   [ -x "$PYBIN" ] || PYBIN="$(command -v python3 || echo /usr/bin/python3)"
+  # mac_load_agent LABEL PLIST — (re)load a LaunchAgent robustly and force-start
+  # the long-running ones. Self-heals the usual snags so people don't have to
+  # decode a cryptic failure: a stale instance (bootout first), a service left
+  # disabled/blocked pending the macOS background-item approval (enable + retry),
+  # and RunAtLoad not firing on time (kickstart). Returns non-zero only if
+  # launchd refuses to register it at all — which is the one case that genuinely
+  # needs the user to approve it in System Settings.
+  mac_load_agent() {
+    local label="$1" plist="$2" dom="gui/$(id -u)"
+    launchctl enable "$dom/$label" 2>/dev/null || true   # clear any prior "disabled" state
+    launchctl bootout "$dom/$label" 2>/dev/null || true
+    if ! launchctl bootstrap "$dom" "$plist" 2>/dev/null; then
+      launchctl enable "$dom/$label" 2>/dev/null || true
+      launchctl bootout "$dom/$label" 2>/dev/null || true
+      launchctl bootstrap "$dom" "$plist" 2>/dev/null || return 1
+    fi
+    # Force the continuously-running services to start now (don't wait on
+    # RunAtLoad timing). The periodic ones (watchdog/backup) run on their own
+    # schedule — no need to kick them off immediately.
+    case "$label" in
+      *.terminal|*.dashboard) launchctl kickstart -k "$dom/$label" 2>/dev/null || true ;;
+    esac
+    return 0
+  }
+  FAILED_AGENTS=""
   for label in com.sessionlauncher.terminal com.sessionlauncher.dashboard com.sessionlauncher.watchdog com.sessionlauncher.backup; do
     TPL="$SRC/templates/$label.plist.template"
     PLIST="$LA_DIR/$label.plist"
@@ -872,14 +897,30 @@ if [ "$PLATFORM" = "mac" ]; then
     fi
     if [ ! -f "$TPL" ]; then
       warn "Template $TPL missing — skipping $label."
+      FAILED_AGENTS="$FAILED_AGENTS $label"
       continue
     fi
     sed -e "s|__HOME__|$HOME|g" -e "s|__PYTHON__|$PYBIN|g" "$TPL" > "$PLIST"
-    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null \
-      && ok "Loaded $label" \
-      || warn "Couldn't load $label — you may need to grant permission and re-run."
+    if mac_load_agent "$label" "$PLIST"; then
+      ok "Loaded $label"
+    else
+      warn "Couldn't load $label."
+      FAILED_AGENTS="$FAILED_AGENTS$label "
+    fi
   done
+  # The background-item approval is the one thing launchctl can't force. If an
+  # agent wouldn't register, point the user at the EXACT setting instead of a
+  # vague "grant permission" — this is what tripped up the first teammates.
+  if [ -n "$FAILED_AGENTS" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+    say ""
+    warn "macOS is holding back a background service until you allow it:  $FAILED_AGENTS"
+    say  "Turn it on — takes 10 seconds:"
+    say  "  1. Open  ${C_BOLD}System Settings → General → Login Items & Extensions${C_RESET}"
+    say  "  2. Scroll to ${C_BOLD}Allow in the Background${C_RESET} and switch ON anything named"
+    say  "     'Session Launcher', 'portal', 'bash', or your username."
+    say  "  3. Re-run this installer — it picks up where it left off."
+    say  "  (Still stuck? The reason is logged in  ${C_BOLD}~/.claude-launcher/terminal.log${C_RESET}.)"
+  fi
 elif [ "$PLATFORM" = "wsl" ]; then
   SD_DIR="$HOME/.config/systemd/user"
   run "creating $SD_DIR" mkdir -p "$SD_DIR"
@@ -1016,7 +1057,13 @@ else
     say "Common fixes:"
     say "  - Give it a minute and re-run me — the services can take a moment to boot."
     say "  - Make sure Tailscale is connected (open the app)."
-    say "  - On macOS, you may need to allow the background services when prompted."
+    if [ "$PLATFORM" = "mac" ]; then
+      say "  - If the ${C_BOLD}terminal service (port 7681)${C_RESET} is the one failing, macOS is almost"
+      say "    certainly holding it in the background. Turn it on here, then re-run me:"
+      say "      ${C_BOLD}System Settings → General → Login Items & Extensions → Allow in the Background${C_RESET}"
+      say "    Or force it now:  ${C_BOLD}launchctl kickstart -k gui/\$(id -u)/com.sessionlauncher.terminal${C_RESET}"
+      say "    Why it failed is logged in  ${C_BOLD}~/.claude-launcher/terminal.log${C_RESET}"
+    fi
     exit 1
   fi
 fi

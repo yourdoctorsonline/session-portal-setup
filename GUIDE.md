@@ -10,22 +10,24 @@ This guide walks you through the whole thing. You don't need to know how to code
 - **A Claude account with Claude Code.** You need a Pro or Max plan. You can add more than one account later if you have them.
 - **Your phone.** This is where you'll open the portal once it's running.
 
-## If you're on Windows: do this first
+## If you're on Windows
 
-Windows can't run Session Launcher on its own. It needs WSL2, which is a Linux environment that lives inside Windows. Setting it up takes a few minutes.
+Windows can't run Session Launcher on its own — it needs WSL2, a Linux environment that lives inside Windows. **You have one PowerShell command that handles everything**, including installing WSL if you don't have it yet.
 
-1. Click the Start menu, type `PowerShell`, right-click it, and choose **Run as administrator**.
-2. Type this and press Enter:
-   ```
-   wsl --install
-   ```
-3. Restart your computer when it asks you to.
-4. After the restart, open the **Ubuntu** app from the Start menu. It finishes setting itself up and asks you to pick a username and password. Write these down.
-5. You're now in a Linux window. Run the one command below from there.
+Open **PowerShell** (click Start, type `PowerShell`, press Enter), paste this in, and press Enter:
 
-Mac users can skip all of this.
+```
+irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex
+```
 
-## The one command
+- If WSL isn't installed yet, it tells you exactly what to run (`wsl --install`) — do that, reboot, finish the quick Ubuntu setup (pick a username + password), then paste the same command again.
+- Once WSL is ready, it runs the whole installer for you inside Ubuntu. Follow the prompts from there.
+
+> **Seeing `The '<' operator is reserved for future use`?** That means you pasted the **Mac/Linux** command (below) into PowerShell. On Windows, use the PowerShell command above instead — or run the Mac/Linux command inside the **Ubuntu** window, not PowerShell.
+
+Mac users can skip this section.
+
+## The one command (Mac, or inside the Ubuntu window on Windows)
 
 Open your Terminal (on a Mac) or the Ubuntu window (on Windows), paste this in, and press Enter:
 
