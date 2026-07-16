@@ -476,6 +476,20 @@ tsip() {
   "$ts" ip -4 2>/dev/null | head -1
 }
 
+# ip_is_local IP — is IP actually configured on a local network interface? A
+# Tailscale address can EXIST (`tailscale ip` returns it) while the device is
+# still connected-but-not-authorized — on a tailnet with device approval, a new
+# device gets an IP but stays unauthorized until an admin approves it, and that IP
+# is NOT bound to any interface. The portal binds to that IP, so it can't start
+# until the device is approved. This distinguishes "has an address" from "the
+# address is actually live".
+ip_is_local() {
+  local ip="$1"
+  ifconfig 2>/dev/null | grep -qwF "$ip" && return 0
+  ip -4 addr 2>/dev/null | grep -qwF "$ip" && return 0
+  return 1
+}
+
 # brew_bin — path to an installed Homebrew, or empty. Probes the standard
 # Apple-Silicon / Intel locations, NOT just PATH: a `curl … | bash` installer
 # runs with a bare PATH that omits /opt/homebrew/bin, so a plain `command -v
@@ -841,6 +855,24 @@ else
     exit 1
   fi
   ok "Tailscale connected — your address is $TS_IP"
+  # Having an address isn't the same as being AUTHORIZED. On a tailnet with device
+  # approval (common on company/org tailnets), a new device gets an IP but stays
+  # unauthorized — and that IP isn't live on any interface, so the portal can't
+  # bind to it. Catch it here so it isn't a mystery "3 checks failed" later.
+  if ! ip_is_local "$TS_IP"; then
+    say ""
+    warn "…but this device isn't ${C_BOLD}authorized${C_RESET} on the tailnet yet."
+    say  "Your tailnet requires an admin to approve new devices. Until that happens the"
+    say  "portal can't start (it binds to your Tailscale address, which isn't live yet)."
+    say  "  • Ask a Tailscale admin to approve this Mac:"
+    say  "    ${C_BOLD}https://login.tailscale.com/admin/machines${C_RESET}"
+    say  "    (or have them turn OFF ${C_BOLD}Device approval${C_RESET} in the tailnet settings)."
+    say  "  • Setup will still finish. Once you're approved the portal starts on its"
+    say  "    own — or just re-run this installer."
+    say  ""
+    say  "  ${C_BOLD}Tip:${C_RESET} a personal Tailscale account (not your work login) has no approval"
+    say  "  step at all — sign in with the same personal account on your Mac and phone."
+  fi
 fi
 
 # ---- STEP 6: portal install (AC-TI-008) -------------------------------------
