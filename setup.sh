@@ -208,11 +208,22 @@ setup_backup() {
   say "  (It refreshes on its own every hour; it only ever pushes, never merges.)"
 }
 
+# plugin_add CFG NAME MARKETPLACE INSTALL-REF — install a Claude plugin into one
+# config dir, skipping if it's already cached (so a re-run does no network work).
+# Best-effort: marketplace/network hiccups never abort setup.
+plugin_add() {
+  local pcfg="$1" pname="$2" pmkt="$3" pref="$4"
+  ls -d "$pcfg"/plugins/cache/*/"$pname" >/dev/null 2>&1 && return 0
+  CLAUDE_CONFIG_DIR="$pcfg" claude plugin marketplace add "$pmkt" >/dev/null 2>&1 || true
+  CLAUDE_CONFIG_DIR="$pcfg" claude plugin install "$pref" >/dev/null 2>&1 || true
+}
+
 # apply_orchestrator_defaults SRC — make every signed-in Claude account launch as
-# an ENGINEERING ORCHESTRATOR: Opus 4.8 + ultracode effort, the eng-harness
-# conductor skill (with its superpowers + zero-trust-verification deps), and a
-# standing instruction to route routine subagent work to Sonnet. SRC is the
-# extracted repo root (it ships the skills under SRC/skills/). Idempotent.
+# an ENGINEERING ORCHESTRATOR: Opus 4.8 + ultracode effort, a curated skill
+# toolkit (eng-harness conductor + zero-trust + human-copywriting + taste, plus
+# the superpowers/caveman/ponytail plugins), and a standing instruction to route
+# routine subagent work to Sonnet. SRC is the extracted repo root (it ships the
+# skills under SRC/skills/). Idempotent — safe to re-run for updates.
 apply_orchestrator_defaults() {
   local src="$1" cfg name sk
   for cfg in "$HOME"/.claude "$HOME"/.claude-*; do
@@ -222,15 +233,22 @@ apply_orchestrator_defaults() {
     creds_ok "$cfg" || continue   # only accounts that are actually signed in
     say "  configuring $name as an engineering orchestrator…"
     mkdir -p "$cfg/skills"
-    # eng-harness + its hard dep, copied in (survive without the source repo)
-    for sk in eng-harness zero-trust-verification; do
+    # Skill FILES, copied in so they survive without the source repo:
+    #   eng-harness — the quality conductor (brainstorm→plan→build→verify)
+    #   zero-trust-verification — verify before declaring done
+    #   human-copywriting — reader-facing copy with zero AI tells (WP:AISIGNS)
+    #   design-taste-frontend — "taste": anti-slop frontend/landing-page design
+    for sk in eng-harness zero-trust-verification human-copywriting design-taste-frontend; do
       [ -d "$src/skills/$sk" ] && { rm -rf "$cfg/skills/$sk"; cp -R "$src/skills/$sk" "$cfg/skills/$sk"; }
     done
-    # superpowers plugin — the harness invokes superpowers:brainstorming etc.
-    if ! ls -d "$cfg"/plugins/cache/*/superpowers >/dev/null 2>&1; then
-      CLAUDE_CONFIG_DIR="$cfg" claude plugin marketplace add anthropics/claude-plugins-official >/dev/null 2>&1 || true
-      CLAUDE_CONFIG_DIR="$cfg" claude plugin install superpowers@claude-plugins-official >/dev/null 2>&1 || true
-    fi
+    # Plugin skills, from their marketplaces (each skipped if already cached):
+    #   superpowers — backs the harness (superpowers:brainstorming, etc.)
+    #   caveman     — terse, filler-free replies → ~65% fewer output tokens
+    #   ponytail    — write the least code that solves it → fewer tokens
+    plugin_add "$cfg" superpowers anthropics/claude-plugins-official superpowers@claude-plugins-official
+    plugin_add "$cfg" caveman     JuliusBrussee/caveman              caveman@caveman
+    plugin_add "$cfg" ponytail    DietrichGebert/ponytail            ponytail@ponytail
+    say "    skills: eng-harness · caveman + ponytail (fewer tokens) · taste (no design slop) · human-copywriting (no AI tells) · superpowers · zero-trust"
     # model + effort in settings.json, AND mark first-run onboarding complete in
     # .claude.json. Without the onboarding flag, a freshly-signed-in account shows
     # the interactive theme picker on first launch — which a headless launcher
@@ -249,18 +267,39 @@ c["hasCompletedOnboarding"] = True
 c.setdefault("theme", "dark")
 json.dump(c, open(cf, "w"), indent=2)
 PY
-    # Sonnet-subagent routing instruction (no hard switch exists — this is it)
-    if ! grep -q "Engineering Orchestrator" "$cfg/CLAUDE.md" 2>/dev/null; then
-      cat >> "$cfg/CLAUDE.md" <<'MD'
-
-# Session defaults — Engineering Orchestrator
+    # Standing orchestrator instructions, written INSIDE a fenced marker block so
+    # a re-run replaces it (keeps it current) instead of skipping or duplicating —
+    # and legacy unfenced copies from older installs get cleaned up too.
+    python3 - "$cfg/CLAUDE.md" <<'PY'
+import os, re, sys
+p = sys.argv[1]
+txt = open(p).read() if os.path.exists(p) else ""
+BEGIN, END = "<!-- ENG-ORCH:START -->", "<!-- ENG-ORCH:END -->"
+# drop any prior fenced block, then any legacy unfenced section (heading→next H1/EOF)
+txt = re.sub(re.escape(BEGIN) + r".*?" + re.escape(END), "", txt, flags=re.S)
+txt = re.sub(r"\n*# Session defaults — Engineering Orchestrator.*?(?=\n# |\Z)", "", txt, flags=re.S)
+body = """# Session defaults — Engineering Orchestrator
 
 - **Model:** Opus 4.8 (settings.json). Keep the main loop, judgment, and final verification on Opus.
 - **Effort:** ultracode (settings.json) — reach for the Workflow tool on substantive work.
-- **Engineering discipline:** invoke the **eng-harness** skill for any build / fix / refactor / script / ship (it is the mandatory conductor; a fast lane covers small changes).
-- **Model routing:** delegate routine, parallel, mechanical, and first-pass subagent work to **Sonnet** (`model: 'sonnet'` in Workflow `agent()` / Task). Reserve Opus for the conductor, hard judgment, and final adversarial verification.
-MD
-    fi
+- **Engineering discipline:** invoke **eng-harness** for any build / fix / refactor / script / ship (mandatory conductor; a fast lane covers small changes).
+- **Model routing:** delegate routine, parallel, mechanical, first-pass subagent work to **Sonnet** (`model: 'sonnet'` in Workflow `agent()` / Task). Reserve Opus for the conductor, hard judgment, and final adversarial verification.
+
+## Skill toolkit — apply automatically, no prompting
+
+These fire on their own when the work matches; you never need to be asked:
+- **eng-harness** — the quality conductor. Auto-invoke for any build / fix / refactor / ship.
+- **zero-trust-verification** — verify claims and outputs before declaring anything done.
+- **caveman** *(always-on)* — reply in tight, filler-free prose to save output tokens. Keep code, commands, file paths and errors byte-for-byte exact. Terse is not vague — stay clear and correct.
+- **ponytail** *(always-on)* — before writing code, take the least-code path that fully solves it (reuse, stdlib, native features, one line) instead of scaffolding.
+- **design-taste-frontend** ("taste") — auto-apply on any landing page / marketing / redesign / visual UI so output never looks templated or AI-generated.
+- **human-copywriting** — auto-apply when writing or rewriting any reader-facing COPY (landing pages, ads, emails, posts, bios) so it reads human, with zero AI tells.
+
+**If two would conflict:** caveman governs *your own* terse working/chat output; deliverables still get full quality — write user-facing copy with human-copywriting (polished, not caveman) and design with taste. Brevity never overrides correctness, a genuinely needed explanation, or code/command accuracy."""
+block = BEGIN + "\n" + body + "\n" + END
+txt = (txt.rstrip() + "\n\n") if txt.strip() else ""
+open(p, "w").write(txt + block + "\n")
+PY
   done
 }
 
@@ -709,7 +748,7 @@ done
 say ""
 say "Setting up engineering defaults (Opus 4.8 + ultracode + eng-harness)…"
 if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
-  say "DRYRUN: would set model/effort, install eng-harness + superpowers, add routing note for each signed-in account"
+  say "DRYRUN: would set model/effort + Sonnet routing, and install the skill toolkit (eng-harness, zero-trust, human-copywriting, taste, superpowers, caveman, ponytail) for each signed-in account"
 else
   apply_orchestrator_defaults "$SRC"
   ok "Engineering defaults applied."
