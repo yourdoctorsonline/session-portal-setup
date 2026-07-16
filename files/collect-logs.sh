@@ -1,14 +1,15 @@
 #!/bin/bash
-# collect-logs.sh — one-shot diagnostics for "can't launch Claude sessions".
+# collect-logs.sh — REPAIR the portal, then collect diagnostics.
 # -----------------------------------------------------------------------------
 # Run it directly (no install needed):
 #   bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/files/collect-logs.sh)
 #
-# It gathers everything relevant to a failing launch — the claude version, WHICH
-# launch flags this claude actually supports, account/config state, and a LIVE
-# test-launch that keeps the tmux pane alive on crash so we capture the real
-# error claude prints. Writes a report to ~/.claude-launcher/diagnostics-<ts>.txt
-# and prints it so you can copy/send it back.
+# It FIRST self-heals — pulls the latest portal scripts from the repo (so fixes
+# like the folder-trust launch fix apply) and restarts the services — then
+# gathers diagnostics: the claude version, WHICH launch flags this claude
+# supports, account/config state, and a LIVE test-launch that keeps the tmux pane
+# alive on crash so we capture the real error. Writes a report to
+# ~/.claude-launcher/diagnostics-<ts>.txt and prints it so you can copy/send it.
 # -----------------------------------------------------------------------------
 set -u
 
@@ -32,9 +33,46 @@ has_flag() {
   if "$CLAUDE_BIN" --help 2>&1 | grep -q -- "$1"; then echo "yes"; else echo "MISSING"; fi
 }
 
+# self_heal — pull the latest portal scripts from the repo (so known fixes, like
+# the folder-trust launch fix, apply) and restart the services. Best-effort and
+# NON-DESTRUCTIVE: each file downloads to a temp name and is only swapped in if
+# the download succeeded and is non-empty, so a network blip can't wipe a working
+# script. Restarting ttyd is safe — tmux (Claude) sessions survive it.
+REPO_RAW="https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/files"
+BIN="$LDIR/bin"
+self_heal() {
+  if [ ! -d "$BIN" ]; then echo "portal not installed at $BIN — nothing to repair"; return; fi
+  local f n=0
+  for f in launch-claude-session.sh portal-web.py portal.sh portal-attach.sh \
+           portal-menu.sh fd-watchdog.sh backup-agentic-os.sh collect-logs.sh; do
+    if curl -fsSL -m 20 "$REPO_RAW/$f" -o "$BIN/.$f.new" 2>/dev/null && [ -s "$BIN/.$f.new" ]; then
+      mv "$BIN/.$f.new" "$BIN/$f"
+      case "$f" in *.sh) chmod +x "$BIN/$f" 2>/dev/null || true ;; esac
+      n=$((n + 1))
+    else
+      rm -f "$BIN/.$f.new" 2>/dev/null || true
+    fi
+  done
+  echo "refreshed $n/8 portal script(s) to the latest version"
+  # Restart the services so an updated portal-web.py / ttyd take effect. (The
+  # launcher is re-read fresh on every launch, so it needs no restart.)
+  if [ "$(uname -s)" = "Darwin" ]; then
+    for l in com.sessionlauncher.dashboard com.sessionlauncher.terminal; do
+      launchctl kickstart -k "gui/$(id -u)/$l" 2>/dev/null && echo "restarted $l" || true
+    done
+  else
+    systemctl --user restart session-dashboard session-terminal 2>/dev/null \
+      && echo "restarted portal services" || true
+  fi
+}
+
 report() {
   echo "===== Session Launcher diagnostics — $TS ====="
   echo "(collected by collect-logs.sh — safe to share; no passwords/tokens are included)"
+  echo
+
+  echo "## 0. Self-heal (repair applied before diagnosing)"
+  printf '%s\n' "${HEAL_OUTPUT:-(not run)}" | sed 's/^/  /'
   echo
 
   echo "## 1. System"
@@ -123,12 +161,17 @@ report() {
   echo "===== end ====="
 }
 
+echo "▶ Repairing the portal (pulling the latest scripts + restarting services)…"
+HEAL_OUTPUT="$(self_heal 2>&1)"
+printf '%s\n' "$HEAL_OUTPUT" | sed 's/^/   /'
+echo "▶ Collecting diagnostics…"
 report > "$OUT" 2>&1
 
 echo ""
-echo "✅ Diagnostics saved to:"
+echo "✅ Repaired + diagnostics saved to:"
 echo "   $OUT"
 echo ""
-echo "Send that file (or copy everything below) to whoever is helping you:"
+echo "If launches were broken, try launching again now — the repair may have fixed it."
+echo "Otherwise send that file (or copy everything below) to whoever is helping you:"
 echo "──────────────────────────────────────────────────────────────────────"
 cat "$OUT"
