@@ -10,37 +10,36 @@ This guide walks you through the whole thing. You don't need to know how to code
 - **A Claude account with Claude Code.** You need a Pro or Max plan. You can add more than one account later if you have them.
 - **Your phone.** This is where you'll open the portal once it's running.
 
-## If you're on Windows
+## The one command — Mac or Windows
 
-Windows can't run Session Launcher on its own — it needs WSL2, a Linux environment that lives inside Windows. **You have one PowerShell command that handles everything**, including installing WSL if you don't have it yet.
-
-Open **PowerShell** (click Start, type `PowerShell`, press Enter), paste this in, and press Enter:
+Paste **all four lines** into your **Terminal** (on a Mac) or **PowerShell** (on Windows), and press Enter. The same command works on both — it detects your system and runs the right installer.
 
 ```
+echo " \`" > /dev/null # " <#
+curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh | bash
+exit #> > $null
 irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex
 ```
 
-- If WSL isn't installed yet, it tells you exactly what to run (`wsl --install`) — do that, reboot, finish the quick Ubuntu setup (pick a username + password), then paste the same command again.
-- Once WSL is ready, it runs the whole installer for you inside Ubuntu. Follow the prompts from there.
+**Copy all four lines exactly**, including the odd-looking first line — that line is what lets one command work on both systems. From here the setup asks you a few questions and does the rest.
 
-> **Seeing `The '<' operator is reserved for future use`?** That means you pasted the **Mac/Linux** command (below) into PowerShell. On Windows, use the PowerShell command above instead — or run the Mac/Linux command inside the **Ubuntu** window, not PowerShell.
+- **On a Mac:** it runs the installer, then closes that terminal window when it's finished. Your link and QR code are printed just before it closes — that's normal.
+- **On Windows:** it runs in PowerShell. Windows needs WSL2 (a Linux layer) to run the portal — if you don't have it yet, the command tells you to run `wsl --install`, reboot, finish the quick Ubuntu setup (pick a username + password), then paste the same command again.
 
-Mac users can skip this section.
+### If the one command doesn't work
 
-## The one command (Mac, or inside the Ubuntu window on Windows)
+Run the plain command for your system instead:
 
-Open your Terminal (on a Mac) or the Ubuntu window (on Windows), paste this in, and press Enter:
+- **Mac / Linux / inside the Ubuntu (WSL) window:**
+  ```
+  bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)
+  ```
+- **Windows PowerShell:**
+  ```
+  irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex
+  ```
 
-```
-bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)
-```
-
-That's it. From here the setup asks you questions and does the work. Here's what each step does so nothing catches you off guard.
-
-> **Why `bash <(curl …)` and not `curl … | bash`?** The setup has to ask you a
-> couple of things — your Mac password (if it needs to install Homebrew) and
-> your Claude sign-in. The form above keeps your keyboard wired straight to the
-> installer, so those prompts work smoothly instead of looking like a freeze.
+> If you pasted a command and saw `The '<' operator is reserved for future use`, you used the **Mac** command in **PowerShell** — use the Windows one above (or the combined four-line command).
 
 ## What the setup will do
 
