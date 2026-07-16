@@ -420,14 +420,19 @@ claude_signin() {
   fi
 }
 
-# tsip — first line of `tailscale ip -4`, probing the usual install locations
-# because a piped-in installer inherits a bare PATH.
-tsip() {
-  local ts=""
+# ts_bin — path to the tailscale CLI, probing the usual install locations (not
+# just PATH, because a piped-in installer inherits a bare PATH). Empty if none.
+ts_bin() {
+  local c
   for c in /opt/homebrew/bin/tailscale /usr/local/bin/tailscale /usr/bin/tailscale; do
-    [ -x "$c" ] && { ts="$c"; break; }
+    [ -x "$c" ] && { printf '%s' "$c"; return 0; }
   done
-  [ -n "$ts" ] || ts="$(command -v tailscale 2>/dev/null)"
+  command -v tailscale 2>/dev/null
+}
+
+# tsip — first line of `tailscale ip -4` (empty if not installed / not connected).
+tsip() {
+  local ts; ts="$(ts_bin)"
   [ -n "$ts" ] || return 0
   "$ts" ip -4 2>/dev/null | head -1
 }
@@ -712,56 +717,63 @@ fi
 
 # ---- STEP 5: Tailscale (AC-TI-007) ------------------------------------------
 step_banner 5 "Setting up Tailscale (your private network)"
-say ""
-say "${C_BOLD}Heads up: this step will ask for your computer password${C_RESET} — the one you"
-say "log into this computer with, ${C_BOLD}not${C_RESET} a Tailscale password."
-say "${C_BOLD}As you type it, nothing shows on screen — no dots, no stars.${C_RESET} That's"
-say "normal (it's hidden on purpose). Just type it and press Enter."
-say ""
-if [ "$PLATFORM" = "mac" ]; then
-  # Install the Homebrew FORMULA (CLI + tailscaled daemon), NOT `--cask tailscale`:
-  # the cask is the GUI app only and ships NO `tailscale` command, so every step
-  # below (tsip, `tailscale up`) would fail and the connect loop would time out.
-  if ! have tailscale; then
-    run "installing Tailscale" brew install tailscale
-  else
-    ok "Tailscale already installed."
-  fi
-  # Start tailscaled as a background service (one-time sudo). `tailscale up`
-  # below then brings the connection up.
-  run "starting Tailscale" sudo brew services start tailscale
-elif [ "$PLATFORM" = "wsl" ]; then
-  if ! have tailscale; then
-    run "installing Tailscale" /bin/bash -c "curl -fsSL https://tailscale.com/install.sh | sh"
-  else
-    ok "Tailscale already installed."
-  fi
-  # Tailscale needs systemd; WSL only has it when [boot] systemd=true is set.
-  if [ "${SETUP_DRYRUN:-0}" != "1" ] && ! systemctl --user show-environment >/dev/null 2>&1 \
-       && ! systemctl is-system-running >/dev/null 2>&1; then
-    warn "WSL needs systemd turned on before Tailscale can run."
-    # APPEND (don't truncate) so we never wipe an existing wsl.conf ([automount]/
-    # [network]/[user] etc.). Only add it if systemd=true isn't already set.
-    if ! grep -qs "systemd=true" /etc/wsl.conf; then
-      printf '\n[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf >/dev/null \
-        && ok "enabled systemd in WSL"
-    fi
-    say ""
-    say "Almost there — one quick restart of WSL is needed:"
-    say "  1. Open PowerShell and run:  wsl --shutdown"
-    say "  2. Reopen the Ubuntu app."
-    say "  3. Run this same install command again — it'll pick up where it left off."
-    exit 0
-  fi
-  run "starting Tailscale" sudo systemctl enable --now tailscaled
-fi
-
-# bring the connection up if we don't have an IP yet
-if [ -z "$(tsip)" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+if [ -n "$(tsip)" ]; then
+  # Already installed AND connected — this is a re-run / update. Don't reinstall,
+  # don't restart the daemon, and (the point) don't ask for the computer password
+  # again for work that's already done.
+  ok "Tailscale is already installed and connected ($(tsip)) — nothing to do here."
+else
   say ""
-  say "Tailscale will print a ${C_BOLD}https://login.tailscale.com/…${C_RESET} link next."
-  say "Open it in a browser and sign in — then it continues here automatically."
-  run "connecting to Tailscale" sudo tailscale up
+  say "${C_BOLD}Heads up: this step will ask for your computer password${C_RESET} — the one you"
+  say "log into this computer with, ${C_BOLD}not${C_RESET} a Tailscale password."
+  say "${C_BOLD}As you type it, nothing shows on screen — no dots, no stars.${C_RESET} That's"
+  say "normal (it's hidden on purpose). Just type it and press Enter."
+  say ""
+  if [ "$PLATFORM" = "mac" ]; then
+    # Install the Homebrew FORMULA (CLI + tailscaled daemon), NOT `--cask tailscale`:
+    # the cask is the GUI app only and ships NO `tailscale` command, so every step
+    # below (tsip, `tailscale up`) would fail and the connect loop would time out.
+    if [ -z "$(ts_bin)" ]; then
+      run "installing Tailscale" brew install tailscale
+    else
+      ok "Tailscale already installed."
+    fi
+    # Start tailscaled as a background service (one-time sudo). `tailscale up`
+    # below then brings the connection up.
+    run "starting Tailscale" sudo brew services start tailscale
+  elif [ "$PLATFORM" = "wsl" ]; then
+    if ! have tailscale; then
+      run "installing Tailscale" /bin/bash -c "curl -fsSL https://tailscale.com/install.sh | sh"
+    else
+      ok "Tailscale already installed."
+    fi
+    # Tailscale needs systemd; WSL only has it when [boot] systemd=true is set.
+    if [ "${SETUP_DRYRUN:-0}" != "1" ] && ! systemctl --user show-environment >/dev/null 2>&1 \
+         && ! systemctl is-system-running >/dev/null 2>&1; then
+      warn "WSL needs systemd turned on before Tailscale can run."
+      # APPEND (don't truncate) so we never wipe an existing wsl.conf ([automount]/
+      # [network]/[user] etc.). Only add it if systemd=true isn't already set.
+      if ! grep -qs "systemd=true" /etc/wsl.conf; then
+        printf '\n[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf >/dev/null \
+          && ok "enabled systemd in WSL"
+      fi
+      say ""
+      say "Almost there — one quick restart of WSL is needed:"
+      say "  1. Open PowerShell and run:  wsl --shutdown"
+      say "  2. Reopen the Ubuntu app."
+      say "  3. Run this same install command again — it'll pick up where it left off."
+      exit 0
+    fi
+    run "starting Tailscale" sudo systemctl enable --now tailscaled
+  fi
+
+  # bring the connection up if we don't have an IP yet
+  if [ -z "$(tsip)" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+    say ""
+    say "Tailscale will print a ${C_BOLD}https://login.tailscale.com/…${C_RESET} link next."
+    say "Open it in a browser and sign in — then it continues here automatically."
+    run "connecting to Tailscale" sudo tailscale up
+  fi
 fi
 
 # the same-account warning, boxed so it's impossible to miss
