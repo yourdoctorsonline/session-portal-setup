@@ -274,6 +274,21 @@ MD
 # is the pipe and claude has no terminal otherwise.
 claude_signin() {
   local cfg="${1:-}"
+  # THE fresh-machine fix: pre-seed hasCompletedOnboarding BEFORE claude's first
+  # run so it skips the interactive theme-picker onboarding. On a brand-new
+  # machine that picker is the very first thing claude shows — and there's no
+  # clean way to answer it in this scripted context (it hangs / "can't type").
+  # Seeding it before we run claude means sign-in goes straight to /login.
+  local seed_dir="${cfg:-$HOME/.claude}"
+  mkdir -p "$seed_dir" 2>/dev/null || true
+  python3 - "$seed_dir/.claude.json" >/dev/null 2>&1 <<'PY' || true
+import json, os, sys
+f = sys.argv[1]
+d = json.load(open(f)) if os.path.exists(f) else {}
+d["hasCompletedOnboarding"] = True
+d.setdefault("theme", "dark")
+json.dump(d, open(f, "w"), indent=2)
+PY
   if [ -t 1 ]; then
     if [ -n "$cfg" ]; then CLAUDE_CONFIG_DIR="$cfg" claude < /dev/tty
     else claude < /dev/tty; fi
