@@ -30,6 +30,9 @@ if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
 }
 
 # 2) Is a Linux distribution actually installed? Fresh WSL has none.
+#    The first wsl call can take several seconds (WSL has to wake up), so say so —
+#    otherwise a slow check looks like a frozen, blank screen.
+Say 'Checking WSL... (the first check can take up to a minute while WSL starts)'
 $env:WSL_UTF8 = '1'   # make `wsl -l -q` emit clean UTF-8 (not UTF-16 with null bytes)
 $distros = @()
 # @(...) forces an array, so a single distro doesn't collapse to a string (where
