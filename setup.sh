@@ -274,11 +274,10 @@ MD
 # is the pipe and claude has no terminal otherwise.
 claude_signin() {
   local cfg="${1:-}"
-  # THE fresh-machine fix: pre-seed hasCompletedOnboarding BEFORE claude's first
-  # run so it skips the interactive theme-picker onboarding. On a brand-new
-  # machine that picker is the very first thing claude shows — and there's no
-  # clean way to answer it in this scripted context (it hangs / "can't type").
-  # Seeding it before we run claude means sign-in goes straight to /login.
+  # Best-effort: pre-seed hasCompletedOnboarding + a theme. (It doesn't reliably
+  # skip the interactive first-run theme picker — that still appears — but the
+  # bare-claude invocation below makes its keyboard input work, so the user can
+  # just press Return to accept the default and move on.)
   local seed_dir="${cfg:-$HOME/.claude}"
   mkdir -p "$seed_dir" 2>/dev/null || true
   python3 - "$seed_dir/.claude.json" >/dev/null 2>&1 <<'PY' || true
@@ -289,10 +288,21 @@ d["hasCompletedOnboarding"] = True
 d.setdefault("theme", "dark")
 json.dump(d, open(f, "w"), indent=2)
 PY
-  if [ -t 1 ]; then
+  if [ -t 0 ] && [ -t 1 ]; then
+    # Both stdin and stdout are the real terminal (the normal case:
+    # `bash <(curl …)` or `bash setup.sh` in a Terminal). Run claude BARE so it
+    # inherits the terminal's actual stdin/stdout — that's what lets its TUI grab
+    # raw-mode keyboard input. Redirecting stdin from /dev/tty hands claude a
+    # fresh tty fd and its key capture doesn't take (the theme picker / prompts
+    # won't accept typing), which is exactly the "can't type" symptom.
+    if [ -n "$cfg" ]; then CLAUDE_CONFIG_DIR="$cfg" claude
+    else claude; fi
+  elif [ -t 1 ]; then
+    # stdout is a terminal but stdin isn't — feed stdin from the tty.
     if [ -n "$cfg" ]; then CLAUDE_CONFIG_DIR="$cfg" claude < /dev/tty
     else claude < /dev/tty; fi
   else
+    # Fully piped (`curl | bash`) — no terminal at all; use /dev/tty for I/O.
     if [ -n "$cfg" ]; then CLAUDE_CONFIG_DIR="$cfg" claude < /dev/tty > /dev/tty 2>&1
     else claude < /dev/tty > /dev/tty 2>&1; fi
   fi
@@ -532,8 +542,11 @@ elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
   say "DRYRUN: would open Claude for interactive sign-in."
 else
   say ""
-  say "Claude will open now. Sign in, then type  /exit  to come back here."
-  say "(Press Enter when you're ready.)"
+  say "${C_BOLD}Claude will open now to sign in.${C_RESET} Here's the whole flow:"
+  say "  1. If it shows a color-theme list, just press ${C_BOLD}Return${C_RESET} (a default is pre-selected)."
+  say "  2. Follow the sign-in — it opens a browser; approve there."
+  say "  3. Back in Claude, type  ${C_BOLD}/exit${C_RESET}  to come back here."
+  say "(Press Return when you're ready.)"
   read -r _ < /dev/tty 2>/dev/null || true
   claude_signin || true
   if creds_ok "$HOME/.claude"; then
