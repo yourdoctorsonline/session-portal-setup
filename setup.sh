@@ -289,43 +289,22 @@ json.dump(d, open(f, "w"), indent=2)
 PY
 }
 
-# write_signin_helper CFG LABEL FILE — write a tiny script (run in the popped
-# window) that prints plain, numbered steps and then launches claude in a clean
-# terminal. CFG="" means the default account; LABEL names it in the copy.
+# write_signin_helper CFG BIN FILE — write the tiny script that the popped window
+# runs. It IS the Claude terminal: it just launches claude (the numbered steps
+# live in the setup window, not here). CFG="" means the default account. BIN is
+# the ABSOLUTE path to the claude binary — a fresh window is a fresh login shell
+# whose PATH may not include ~/.local/bin yet, so a bare `claude` there hits
+# "command not found"; the absolute path (plus the PATH export) avoids that.
 write_signin_helper() {
-  local cfg="$1" label="$2" file="$3" runline who
-  if [ -n "$cfg" ]; then runline="CLAUDE_CONFIG_DIR='$cfg' claude"; else runline="claude"; fi
-  if [ -n "$label" ]; then who="your ${label} Claude account"; else who="your Claude account"; fi
+  local cfg="$1" bin="$2" file="$3" runline
+  if [ -n "$cfg" ]; then runline="CLAUDE_CONFIG_DIR='$cfg' '$bin'"; else runline="'$bin'"; fi
   cat > "$file" <<EOF
 #!/bin/bash
+export PATH="\$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH"
 clear
-cat <<'BANNER'
-
-  ┌──────────────────────────────────────────────────┐
-  │   SIGN IN TO CLAUDE                                │
-  └──────────────────────────────────────────────────┘
-
-   Just do these 3 things, in order:
-
-     1.  If Claude shows a colour / text-style list,
-         press  RETURN  to accept the highlighted one.
-
-     2.  A browser opens — sign in with
-         ${who}.
-         (No browser? Copy the link Claude prints
-          and open it in your browser yourself.)
-
-     3.  Back at the Claude prompt, type   /exit
-         and press RETURN.
-
-   That's everything. The setup window carries on by
-   itself — you can close this window afterwards.
-
-BANNER
-read -r -p "   Press RETURN to open Claude now… " _ < /dev/tty
 ${runline}
 echo
-echo "   ✅  All set — close this window and return to the setup window."
+echo "   You're done here — close this window and go back to the setup window."
 echo
 EOF
   chmod +x "$file" 2>/dev/null || true
@@ -379,18 +358,25 @@ wait_for_signin() {
 claude_signin() {
   local cfg="${1:-}" label="${2:-}"
   local acct_dir="${cfg:-$HOME/.claude}"
+  local bin; bin="$(claude_bin || printf 'claude')"
   seed_onboarding "$cfg"
 
   local helper="$HOME/.claude-launcher/.signin-claude.sh"
   mkdir -p "$HOME/.claude-launcher" 2>/dev/null || true
-  write_signin_helper "$cfg" "$label" "$helper"
+  write_signin_helper "$cfg" "$bin" "$helper"
 
   if open_term_window "bash '$helper'"; then
+    # The numbered steps stay HERE, in this window, so they're always visible.
+    # The new window is just the Claude terminal.
     say ""
-    say "${C_BOLD}A new window just opened${C_RESET} with 3 simple steps — do them there."
-    say "This window keeps going on its own the moment you're signed in."
+    say "${C_BOLD}A Claude window just opened.${C_RESET} Over in THAT window:"
+    say "  1. If Claude shows a colour / text-style list, press ${C_BOLD}Return${C_RESET}."
+    say "  2. A browser opens — sign in${label:+ with your ${label} account}."
+    say "  3. When you're signed in, type ${C_BOLD}/exit${C_RESET}."
+    say ""
+    say "Leave this window as-is — it continues on its own the moment you're signed in."
     wait_for_signin "$acct_dir" && return 0
-    warn "Didn't detect a sign-in from the other window — let's just do it here instead."
+    warn "Didn't detect a sign-in from the Claude window — let's just do it here instead."
   fi
 
   # Fallback: run claude inline. A real terminal on both stdin+stdout lets its
@@ -444,8 +430,14 @@ brew_bin() {
 # reason — otherwise an already-installed claude gets needlessly reinstalled.
 claude_bin() {
   local c
-  c="$(command -v claude 2>/dev/null)" && { printf '%s' "$c"; return 0; }
-  [ -x "$HOME/.local/bin/claude" ] && { printf '%s' "$HOME/.local/bin/claude"; return 0; }
+  # Check the concrete binary in the standard spots FIRST, so we never mistake a
+  # shell alias/function named `claude` (which `command -v` would echo as text)
+  # for a real path — that matters now that this path is baked, absolute, into
+  # the sign-in helper window.
+  for c in "$HOME/.local/bin/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do
+    [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  c="$(command -v claude 2>/dev/null)" && [ -x "$c" ] && { printf '%s' "$c"; return 0; }
   return 1
 }
 
