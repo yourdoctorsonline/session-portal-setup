@@ -264,21 +264,20 @@ MD
   done
 }
 
-# claude_signin [CONFIG_DIR] — run `claude` interactively for sign-in with stdio
-# that WON'T crash. Newer Bun-based claude builds throw
-# `TypeError: undefined is not an object (evaluating 'process.stderr.fd')` when
-# stdout/stderr are shell-redirected to /dev/tty (as `> /dev/tty 2>&1` does).
-# When we already have a real terminal on stdout, let claude inherit it (fd 1/2
-# stay real TTYs → no crash) and only take stdin from /dev/tty. The full
-# /dev/tty redirect is kept solely as a fallback for `curl | bash`, where stdout
-# is the pipe and claude has no terminal otherwise.
-claude_signin() {
-  local cfg="${1:-}"
-  # Best-effort: pre-seed hasCompletedOnboarding + a theme. (It doesn't reliably
-  # skip the interactive first-run theme picker — that still appears — but the
-  # bare-claude invocation below makes its keyboard input work, so the user can
-  # just press Return to accept the default and move on.)
-  local seed_dir="${cfg:-$HOME/.claude}"
+# ---- Claude sign-in (separate-window UX) ------------------------------------
+# Signing in used to run `claude` right here in the installer's own window. That
+# hijacked the window AND was fragile: handing an already-running shell over to
+# claude's raw-mode TUI is what broke keyboard input ("can't type" at the theme
+# picker). Instead we pop a SEPARATE terminal window that shows 3 plain steps and
+# runs claude there — a clean terminal where typing just works — while THIS
+# window waits and then continues on its own. If we can't open a separate window
+# (non-mac, SSH, unknown terminal), we fall back to running claude inline.
+
+seed_onboarding() {
+  # Best-effort pre-seed of hasCompletedOnboarding + a theme. Doesn't reliably
+  # skip claude's first-run theme picker, but it's harmless and helps on the
+  # builds that do honor it.
+  local seed_dir="${1:-$HOME/.claude}"
   mkdir -p "$seed_dir" 2>/dev/null || true
   python3 - "$seed_dir/.claude.json" >/dev/null 2>&1 <<'PY' || true
 import json, os, sys
@@ -288,21 +287,127 @@ d["hasCompletedOnboarding"] = True
 d.setdefault("theme", "dark")
 json.dump(d, open(f, "w"), indent=2)
 PY
+}
+
+# write_signin_helper CFG LABEL FILE — write a tiny script (run in the popped
+# window) that prints plain, numbered steps and then launches claude in a clean
+# terminal. CFG="" means the default account; LABEL names it in the copy.
+write_signin_helper() {
+  local cfg="$1" label="$2" file="$3" runline who
+  if [ -n "$cfg" ]; then runline="CLAUDE_CONFIG_DIR='$cfg' claude"; else runline="claude"; fi
+  if [ -n "$label" ]; then who="your ${label} Claude account"; else who="your Claude account"; fi
+  cat > "$file" <<EOF
+#!/bin/bash
+clear
+cat <<'BANNER'
+
+  ┌──────────────────────────────────────────────────┐
+  │   SIGN IN TO CLAUDE                                │
+  └──────────────────────────────────────────────────┘
+
+   Just do these 3 things, in order:
+
+     1.  If Claude shows a colour / text-style list,
+         press  RETURN  to accept the highlighted one.
+
+     2.  A browser opens — sign in with
+         ${who}.
+         (No browser? Copy the link Claude prints
+          and open it in your browser yourself.)
+
+     3.  Back at the Claude prompt, type   /exit
+         and press RETURN.
+
+   That's everything. The setup window carries on by
+   itself — you can close this window afterwards.
+
+BANNER
+read -r -p "   Press RETURN to open Claude now… " _ < /dev/tty
+${runline}
+echo
+echo "   ✅  All set — close this window and return to the setup window."
+echo
+EOF
+  chmod +x "$file" 2>/dev/null || true
+}
+
+# open_term_window CMD — run CMD in a SEPARATE terminal window. Returns 0 if a
+# new window was opened, non-zero if we couldn't (caller then falls back to
+# inline). Targets whichever mac terminal the user is actually in, so macOS
+# doesn't prompt for cross-app automation permission.
+open_term_window() {
+  local cmd="$1"
+  [ "$(uname -s)" = "Darwin" ] || return 1
+  have osascript || return 1
+  case "${TERM_PROGRAM:-}" in
+    Apple_Terminal)
+      osascript >/dev/null 2>&1 <<OSA || return 1
+tell application "Terminal"
+  activate
+  do script "$cmd"
+end tell
+OSA
+      ;;
+    iTerm.app)
+      osascript >/dev/null 2>&1 <<OSA || return 1
+tell application "iTerm"
+  activate
+  create window with default profile command "$cmd"
+end tell
+OSA
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# wait_for_signin ACCT_DIR — poll until this account is signed in, so the
+# installer window continues on its own once the user finishes in the other
+# window. ~12 min timeout, then return 1 so the caller can fall back.
+wait_for_signin() {
+  local dir="$1" i=0 max=240
+  printf '   Waiting for you to finish signing in in the other window'
+  while [ "$i" -lt "$max" ]; do
+    if creds_ok "$dir"; then printf ' — done!\n'; return 0; fi
+    sleep 3; i=$((i + 1)); printf '.'
+    [ $((i % 20)) -eq 0 ] && printf '\n   (still waiting — finish the 3 steps, then it continues)'
+  done
+  printf '\n'; return 1
+}
+
+# claude_signin [CONFIG_DIR] [LABEL] — sign a Claude account in. Prefers the
+# separate-window flow above; falls back to running claude inline.
+claude_signin() {
+  local cfg="${1:-}" label="${2:-}"
+  local acct_dir="${cfg:-$HOME/.claude}"
+  seed_onboarding "$cfg"
+
+  local helper="$HOME/.claude-launcher/.signin-claude.sh"
+  mkdir -p "$HOME/.claude-launcher" 2>/dev/null || true
+  write_signin_helper "$cfg" "$label" "$helper"
+
+  if open_term_window "bash '$helper'"; then
+    say ""
+    say "${C_BOLD}A new window just opened${C_RESET} with 3 simple steps — do them there."
+    say "This window keeps going on its own the moment you're signed in."
+    wait_for_signin "$acct_dir" && return 0
+    warn "Didn't detect a sign-in from the other window — let's just do it here instead."
+  fi
+
+  # Fallback: run claude inline. A real terminal on both stdin+stdout lets its
+  # TUI grab raw-mode keyboard input; the /dev/tty forms cover piped stdio.
+  say ""
+  say "${C_BOLD}Claude will open here.${C_RESET}"
+  say "  1. If it shows a colour list, press ${C_BOLD}Return${C_RESET}."
+  say "  2. Sign in when the browser opens${label:+ — use your ${label} account}."
+  say "  3. Back in Claude, type ${C_BOLD}/exit${C_RESET} to return here."
+  read -r _ < /dev/tty 2>/dev/null || true
   if [ -t 0 ] && [ -t 1 ]; then
-    # Both stdin and stdout are the real terminal (the normal case:
-    # `bash <(curl …)` or `bash setup.sh` in a Terminal). Run claude BARE so it
-    # inherits the terminal's actual stdin/stdout — that's what lets its TUI grab
-    # raw-mode keyboard input. Redirecting stdin from /dev/tty hands claude a
-    # fresh tty fd and its key capture doesn't take (the theme picker / prompts
-    # won't accept typing), which is exactly the "can't type" symptom.
     if [ -n "$cfg" ]; then CLAUDE_CONFIG_DIR="$cfg" claude
     else claude; fi
   elif [ -t 1 ]; then
-    # stdout is a terminal but stdin isn't — feed stdin from the tty.
     if [ -n "$cfg" ]; then CLAUDE_CONFIG_DIR="$cfg" claude < /dev/tty
     else claude < /dev/tty; fi
   else
-    # Fully piped (`curl | bash`) — no terminal at all; use /dev/tty for I/O.
     if [ -n "$cfg" ]; then CLAUDE_CONFIG_DIR="$cfg" claude < /dev/tty > /dev/tty 2>&1
     else claude < /dev/tty > /dev/tty 2>&1; fi
   fi
@@ -541,19 +646,12 @@ if creds_ok "$HOME/.claude"; then
 elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
   say "DRYRUN: would open Claude for interactive sign-in."
 else
-  say ""
-  say "${C_BOLD}Claude will open now to sign in.${C_RESET} Here's the whole flow:"
-  say "  1. If it shows a color-theme list, just press ${C_BOLD}Return${C_RESET} (a default is pre-selected)."
-  say "  2. Follow the sign-in — it opens a browser; approve there."
-  say "  3. Back in Claude, type  ${C_BOLD}/exit${C_RESET}  to come back here."
-  say "(Press Return when you're ready.)"
-  read -r _ < /dev/tty 2>/dev/null || true
-  claude_signin || true
+  claude_signin "" "" || true
   if creds_ok "$HOME/.claude"; then
     ok "Signed in to Claude."
   else
     fail_msg "It doesn't look like the sign-in finished."
-    say "Run  claude  yourself, sign in, type /exit, then re-run this installer."
+    say "Open a new terminal, run  claude , sign in, type /exit, then re-run this installer."
     exit 1
   fi
 fi
@@ -578,8 +676,7 @@ while : ; do
     say "DRYRUN: would sign in account '$ACC_NAME' into $ACC_DIR"
     continue
   fi
-  say "Claude will open for '$ACC_NAME'. Sign in with THAT account, then type /exit."
-  claude_signin "$ACC_DIR" || true
+  claude_signin "$ACC_DIR" "$ACC_NAME" || true
   if creds_ok "$ACC_DIR"; then
     ok "'$ACC_NAME' signed in."
   else

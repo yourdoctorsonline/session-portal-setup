@@ -46,7 +46,7 @@ That's it. From here the setup asks you questions and does the work. Here's what
 
 **2. Install the basics for you.** It installs the few background tools the portal needs. You don't have to do anything here — it handles it and checks each one worked.
 
-**3. Sign in to Claude.** It installs Claude Code, then opens the login so you can sign in with your Claude account. It waits until you're signed in before moving on.
+**3. Sign in to Claude.** It installs Claude Code, then opens a **separate window** with three simple steps for signing in — accept the colour prompt with Return, sign in through the browser, and type `/exit` when you're done. The setup window waits and continues on its own the moment you're signed in, so you never have to remember what to do next.
 
 **4. Add another Claude account?** It asks if you want to add a second Claude login. This is optional. If you do, it signs that one in too, and asks again until you say no. Every account you add shows up in the portal automatically, so you can switch between them from your phone.
 
