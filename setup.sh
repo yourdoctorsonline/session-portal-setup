@@ -290,11 +290,12 @@ PY
 }
 
 # write_signin_helper CFG BIN FILE — write the tiny script that the popped window
-# runs. It IS the Claude terminal: it just launches claude (the numbered steps
-# live in the setup window, not here). CFG="" means the default account. BIN is
-# the ABSOLUTE path to the claude binary — a fresh window is a fresh login shell
-# whose PATH may not include ~/.local/bin yet, so a bare `claude` there hits
-# "command not found"; the absolute path (plus the PATH export) avoids that.
+# runs. It shows the numbered steps, gives a 5-second countdown so the user can
+# read them, THEN launches claude (right here, in this window). CFG="" means the
+# default account. BIN is the ABSOLUTE path to the claude binary — a fresh window
+# is a fresh login shell whose PATH may not include ~/.local/bin yet, so a bare
+# `claude` there hits "command not found"; the absolute path (plus the PATH
+# export) avoids that.
 write_signin_helper() {
   local cfg="$1" bin="$2" file="$3" runline
   if [ -n "$cfg" ]; then runline="CLAUDE_CONFIG_DIR='$cfg' '$bin'"; else runline="'$bin'"; fi
@@ -302,6 +303,26 @@ write_signin_helper() {
 #!/bin/bash
 export PATH="\$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH"
 clear
+cat <<'BANNER'
+
+  ┌──────────────────────────────────────────────────┐
+  │   SIGN IN TO CLAUDE                                │
+  └──────────────────────────────────────────────────┘
+
+   Claude opens in THIS window in a few seconds. When it does:
+
+     1.  If it shows a colour / text-style list,
+         press  RETURN  to accept the highlighted one.
+
+     2.  A browser opens — sign in with your Claude account.
+
+     3.  When you're signed in, type   /exit .
+
+   The setup window carries on by itself once you're signed in.
+
+BANNER
+for s in 5 4 3 2 1; do printf '\r   Opening Claude in %s …   ' "\$s"; sleep 1; done
+printf '\r   Opening Claude now…                 \n\n'
 ${runline}
 echo
 echo "   You're done here — close this window and go back to the setup window."
