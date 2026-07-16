@@ -4,18 +4,19 @@ Session Launcher is a web page that runs on your own computer and lets you start
 
 ## Setup
 
-Paste **all four lines** into your **Terminal** (Mac) or **PowerShell** (Windows) and press Enter. The same command works on both — it detects your system and runs the right installer:
+**On a Mac,** open Terminal and run:
 
 ```
-echo " \`" > /dev/null # " <#
-curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh | bash
-exit #> > $null
+bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)
+```
+
+**On Windows,** open PowerShell and run:
+
+```
 irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex
 ```
 
-Copy all four lines exactly (including the odd-looking first line — it's what makes one command work on both). The setup asks you a few questions and handles the rest. On a Mac, the terminal window closes itself when it finishes (your link + QR print first).
-
-Prefer a plain single-platform command? **Mac/Linux:** `bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)` — **Windows PowerShell:** `irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex`
+The setup asks you a few questions and handles the rest.
 
 ## What it sets up
 
