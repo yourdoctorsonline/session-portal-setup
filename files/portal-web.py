@@ -549,9 +549,9 @@ iframe{border:0;width:100%;height:100%;display:block}
   text-decoration:none;-webkit-tap-highlight-color:transparent}
 #back:active{background:rgba(46,42,39,.92)}
 #back .a{font-size:17px;line-height:1}
-/* One-time orientation note so new folks aren't lost when the terminal opens:
-   they can keep working here OR carry on from the Claude app. Auto-fades; "Got
-   it" hides it for good (localStorage). */
+/* Orientation note shown every time the terminal opens so folks aren't lost:
+   keep working here OR carry on from the Claude app. Auto-fades after 15s; "Got
+   it" clears it for this view (it returns next time a session is opened). */
 #hint{position:fixed;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));z-index:11;
   max-width:560px;margin:0 auto;display:flex;align-items:center;gap:10px;
   background:rgba(26,24,23,.94);backdrop-filter:blur(10px);border:1px solid #2e2a27;border-radius:14px;
@@ -567,11 +567,12 @@ iframe{border:0;width:100%;height:100%;display:block}
 <iframe id="t" src="__SRC__" allow="clipboard-read;clipboard-write"></iframe>
 <div id="hint"><span>✦ Your session is live. Keep working right here in the terminal, or carry it on from the <b>Claude app</b> on your phone or computer — it's the same session, wherever you pick it up.</span><button id="hintx">Got it</button></div>
 <script>
+// Show the orientation note EVERY time a terminal is opened (no "remember" —
+// dismissing just clears it for this view; it returns on the next session open).
 (function(){var h=document.getElementById('hint');if(!h)return;
-  if(localStorage.getItem('termHintDone')){h.style.display='none';return}
-  function hide(remember){h.classList.add('gone');if(remember){try{localStorage.setItem('termHintDone','1')}catch(e){}}setTimeout(function(){h.style.display='none'},420)}
-  document.getElementById('hintx').addEventListener('click',function(){hide(true)});
-  setTimeout(function(){hide(false)},15000);
+  function hide(){h.classList.add('gone');setTimeout(function(){h.style.display='none'},420)}
+  document.getElementById('hintx').addEventListener('click',hide);
+  setTimeout(hide,15000);
 })();
 var f=document.getElementById('t'),away=0,last=0;
 // Every iframe reload makes ttyd spawn a fresh PTY, and ttyd 1.7.7 leaks the
