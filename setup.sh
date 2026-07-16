@@ -295,7 +295,11 @@ These fire on their own when the work matches; you never need to be asked:
 - **design-taste-frontend** ("taste") — auto-apply on any landing page / marketing / redesign / visual UI so output never looks templated or AI-generated.
 - **human-copywriting** — auto-apply when writing or rewriting any reader-facing COPY (landing pages, ads, emails, posts, bios) so it reads human, with zero AI tells.
 
-**If two would conflict:** caveman governs *your own* terse working/chat output; deliverables still get full quality — write user-facing copy with human-copywriting (polished, not caveman) and design with taste. Brevity never overrides correctness, a genuinely needed explanation, or code/command accuracy."""
+**If two would conflict:** caveman governs *your own* terse working/chat output; deliverables still get full quality — write user-facing copy with human-copywriting (polished, not caveman) and design with taste. Brevity never overrides correctness, a genuinely needed explanation, or code/command accuracy.
+
+## Autonomous execution mode
+
+Launcher sessions are remote-control — the user is driving you from a phone or another device and is away from the keyboard, so they cannot run anything by hand. Always DO the work yourself with your tools: run shell commands, git, deploys, and file edits via tool calls. NEVER print a block of commands or manual steps for the user to run; executing them yourself is the entire point. If a task needs CLI / deploy / git steps, run them and report the outcome. (Permission bypass only removes the approval prompt — this is your standing instruction to keep executing instead of handing back a command block.)"""
 block = BEGIN + "\n" + body + "\n" + END
 txt = (txt.rstrip() + "\n\n") if txt.strip() else ""
 open(p, "w").write(txt + block + "\n")
