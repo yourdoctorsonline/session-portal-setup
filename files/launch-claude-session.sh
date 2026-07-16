@@ -74,6 +74,42 @@ esac
 [ -n "$CLAUDE_BIN" ] && [ -x "$CLAUDE_BIN" ] || fail "no-claude"
 [ -d "$REPO" ] || fail "no-repo"
 
+# Pre-trust the launch folder. Claude Code shows a first-run "Do you trust the
+# files in this folder?" security prompt for any not-yet-trusted directory. A
+# headless remote-control launch has NO ONE to answer it, so claude blocks there
+# forever: the session never registers (empty URL), the Claude app shows nothing,
+# and the ttyd terminal shows a stuck prompt / black screen. That's the "black
+# screen on launch" everyone hits on a fresh install (every folder is untrusted).
+# Marking hasTrustDialogAccepted for this folder in the account's .claude.json is
+# exactly what clicking "Yes, I trust this folder" persists — so claude skips the
+# prompt and starts the session. (Default account => ~/.claude.json; a named
+# account => its own <config-dir>/.claude.json.)
+if [ -n "$CONFIG_DIR" ]; then TRUST_JSON="$CONFIG_DIR/.claude.json"; else TRUST_JSON="$HOME/.claude.json"; fi
+PATH="$EXTRA_PATH" python3 - "$TRUST_JSON" "$REPO" >/dev/null 2>&1 <<'PY' || true
+import json, os, sys
+f, repo = sys.argv[1], sys.argv[2]
+if os.path.exists(f):
+    try:
+        d = json.load(open(f))
+    except Exception:
+        sys.exit(0)  # never clobber a config we couldn't parse
+else:
+    d = {}
+projects = d.setdefault("projects", {})
+# Trust BOTH the given path and its resolved realpath — claude looks trust up by
+# the resolved cwd, and on macOS /var -> /private/var (and other volumes can be
+# symlinked), so the two can differ.
+for path in {repo, os.path.realpath(repo)}:
+    p = projects.setdefault(path, {})
+    p["hasTrustDialogAccepted"] = True
+    p.setdefault("allowedTools", [])
+tmp = f + ".launcher-tmp"
+with open(tmp, "w") as fh:
+    json.dump(d, fh, indent=2)
+os.chmod(tmp, 0o600)
+os.replace(tmp, f)
+PY
+
 # Trim whitespace; default the name to the alias-style timestamped form.
 NAME="$(printf '%s' "$NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 [ -n "$NAME" ] || NAME="claude-$ACCOUNT-$(date +%H%M%S)"
