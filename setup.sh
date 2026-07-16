@@ -231,13 +231,23 @@ apply_orchestrator_defaults() {
       CLAUDE_CONFIG_DIR="$cfg" claude plugin marketplace add anthropics/claude-plugins-official >/dev/null 2>&1 || true
       CLAUDE_CONFIG_DIR="$cfg" claude plugin install superpowers@claude-plugins-official >/dev/null 2>&1 || true
     fi
-    # model (Opus 4.8) + effort (ultracode) in settings.json
-    python3 - "$cfg/settings.json" <<'PY'
+    # model + effort in settings.json, AND mark first-run onboarding complete in
+    # .claude.json. Without the onboarding flag, a freshly-signed-in account shows
+    # the interactive theme picker on first launch — which a headless launcher
+    # session can't answer, so it hangs on a black screen and registers nothing.
+    python3 - "$cfg" <<'PY'
 import json, os, sys
-f = sys.argv[1]
-d = json.load(open(f)) if os.path.exists(f) else {}
-d["model"] = "opus"; d["effortLevel"] = "ultracode"  # plain 'opus' = Opus 4.8, works for everyone; opus[1m] needs 1M-context access most accounts lack
-json.dump(d, open(f, "w"), indent=2); open(f, "a").write("\n")
+cfg = sys.argv[1]
+sf = os.path.join(cfg, "settings.json")
+s = json.load(open(sf)) if os.path.exists(sf) else {}
+s["model"] = "opus"; s["effortLevel"] = "ultracode"   # plain 'opus' = Opus 4.8, works for everyone (opus[1m] needs 1M access most accounts lack)
+s.setdefault("theme", "dark")
+json.dump(s, open(sf, "w"), indent=2); open(sf, "a").write("\n")
+cf = os.path.join(cfg, ".claude.json")
+c = json.load(open(cf)) if os.path.exists(cf) else {}
+c["hasCompletedOnboarding"] = True
+c.setdefault("theme", "dark")
+json.dump(c, open(cf, "w"), indent=2)
 PY
     # Sonnet-subagent routing instruction (no hard switch exists — this is it)
     if ! grep -q "Engineering Orchestrator" "$cfg/CLAUDE.md" 2>/dev/null; then
