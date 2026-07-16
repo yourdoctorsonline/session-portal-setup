@@ -29,20 +29,36 @@ if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
   return
 }
 
-# 2) Is a Linux distribution actually installed? Fresh WSL has none.
-#    The first wsl call can take several seconds (WSL has to wake up), so say so —
-#    otherwise a slow check looks like a frozen, blank screen.
+# 2) Is WSL REALLY installed with a usable distro? The bare `wsl.exe` stub ships
+#    on every Windows, so `Get-Command wsl.exe` passing does NOT mean WSL is
+#    installed. We must run a wsl command and check BOTH its exit code AND that it
+#    named a real distro. On a machine without WSL, `wsl -l -q` returns non-zero
+#    and/or blank+UTF-16-noise output — if we don't catch that, the launch below
+#    triggers Windows' own timed "Press any key to install… Operation aborted"
+#    prompt (which is exactly what a teammate hit).
 Say 'Checking WSL... (the first check can take up to a minute while WSL starts)'
-$env:WSL_UTF8 = '1'   # make `wsl -l -q` emit clean UTF-8 (not UTF-16 with null bytes)
-$distros = @()
-# @(...) forces an array, so a single distro doesn't collapse to a string (where
-# $distros[0] would return its first CHARACTER instead of the distro name).
-try { $distros = @( (wsl.exe -l -q) 2>$null | ForEach-Object { $_.Trim() } | Where-Object { $_ } ) } catch {}
-if ($distros.Count -eq 0) {
-  Say "WSL is installed, but there's no Linux distribution yet." 'Yellow'
-  Say 'Do this once, then run this same command again:'
-  Say '  1. Run:  wsl --install -d Ubuntu' 'Green'
-  Say '  2. Finish the Ubuntu setup (pick a username + password).'
+$env:WSL_UTF8 = '1'   # ask wsl for clean UTF-8 output
+# Read $LASTEXITCODE ourselves — don't let a non-zero native exit throw under
+# $ErrorActionPreference=Stop (PowerShell 7.4+ would abort the whole script).
+$prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+$wslRaw = wsl.exe -l -q 2>&1
+$wslExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
+# Strip null bytes / non-printable junk so a not-installed stub's blank/UTF-16
+# noise can't masquerade as a distro name (that's the "Using your WSL distro: "
+# with an empty name bug).
+$distros = @( $wslRaw | ForEach-Object { ("$_" -replace '[^\x20-\x7E]', '').Trim() } | Where-Object { $_ } )
+# Also catch the "not installed" MESSAGE itself (some Windows builds print it with
+# a zero exit code, which would otherwise look like a distro named after the error).
+$wslText = "$wslRaw"
+if ($wslExit -ne 0 -or $distros.Count -eq 0 -or $wslText -match 'not installed|no installed distrib|has no installed') {
+  Say ''
+  Say "WSL isn't set up on this PC yet — that's the Linux layer the portal needs." 'Yellow'
+  Say 'Set it up once, then run this same command again:'
+  Say '  1. Right-click Start and open  Terminal (Admin)  (or PowerShell as Admin)'
+  Say '  2. Run:  wsl --install' 'Green'
+  Say '  3. Reboot when it asks. Open Ubuntu from Start, pick a username + password.'
+  Say '  4. Paste the Windows command here again.'
   return
 }
 
