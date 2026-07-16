@@ -10,36 +10,24 @@ This guide walks you through the whole thing. You don't need to know how to code
 - **A Claude account with Claude Code.** You need a Pro or Max plan. You can add more than one account later if you have them.
 - **Your phone.** This is where you'll open the portal once it's running.
 
-## The one command — Mac or Windows
+## The one command
 
-Paste **all four lines** into your **Terminal** (on a Mac) or **PowerShell** (on Windows), and press Enter. The same command works on both — it detects your system and runs the right installer.
+**On a Mac,** open **Terminal** and paste this:
 
 ```
-echo " \`" > /dev/null # " <#
-curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh | bash
-exit #> > $null
+bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)
+```
+
+**On Windows,** open **PowerShell** and paste this instead:
+
+```
 irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex
 ```
 
-**Copy all four lines exactly**, including the odd-looking first line — that line is what lets one command work on both systems. From here the setup asks you a few questions and does the rest.
+That's it — the setup asks you a few questions and does the rest.
 
-- **On a Mac:** it runs the installer, then closes that terminal window when it's finished. Your link and QR code are printed just before it closes — that's normal.
-- **On Windows:** it runs in PowerShell. Windows needs WSL2 (a Linux layer) to run the portal — if you don't have it yet, the command tells you to run `wsl --install`, reboot, finish the quick Ubuntu setup (pick a username + password), then paste the same command again.
-
-### If the one command doesn't work
-
-Run the plain command for your system instead:
-
-- **Mac / Linux / inside the Ubuntu (WSL) window:**
-  ```
-  bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)
-  ```
-- **Windows PowerShell:**
-  ```
-  irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex
-  ```
-
-> If you pasted a command and saw `The '<' operator is reserved for future use`, you used the **Mac** command in **PowerShell** — use the Windows one above (or the combined four-line command).
+- **Windows needs WSL2** (a Linux layer) to run the portal. The PowerShell command sets it up for you — if WSL isn't installed yet it tells you to run `wsl --install`, reboot, finish the quick Ubuntu setup (pick a username + password), then paste the command again.
+- **Seeing `The '<' operator is reserved for future use`?** You pasted the **Mac** command into **PowerShell** — use the Windows command above.
 
 ## What the setup will do
 
