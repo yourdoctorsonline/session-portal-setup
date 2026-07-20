@@ -168,6 +168,27 @@ Close the run (`run.md` status: complete). Ask: "How did this land? Any adjustme
   scales are confusing and leak over-engineering into output anyway). Safety
   (validation, data-loss, security, a11y, tests) is never trimmed. Shape adapted
   from ponytail's "lazy senior developer" ladder.
+- 2026-07-19: Lesson tripwire — Phase 7 (07-learn.md § 2b) runs
+  `scripts/lesson_tripwire.py` on the learnings page after appending. Every
+  PROMOTION CANDIDATE (same lesson on ≥2 distinct dates, no covering Rule) must be
+  either proposed to the user as a new Rule or declined with a dated note on the
+  page — never silently ignored. Promotion is user-approved, never automatic.
+  Origin: harness×graphify study takeaway #3 — the same lesson was logged 6+ times
+  without ever becoming a Rule because detection depended on a human noticing.
+- 2026-07-19: Verify external state fresh — before planning or executing against ANY
+  external or deployed state (prod files, live pages, deployed functions, remote
+  config, handoff briefs), verify it fresh at plan/build entry. A prior description
+  is an inferred premise, not evidence; treat every unverified claim about external
+  state — including your own past notes and run artifacts — as wrong until re-read.
+  Promoted by tripwire (recurred 4+ distinct days, incl. the 264-line portal drift).
+- 2026-07-19: Adversarial review is never skippable on Lane B/C — a normal "just
+  cut a build" release included. Review has repeatedly found defects that green
+  tests missed (canonical case: 9 found, some safety-critical, behind 258 passing
+  tests). Promoted by tripwire (recurred 6 days).
+- 2026-07-19: Every run needs at least one REAL runtime proof — real model, real
+  device or client, past-CDN origin check. Unit and mock evidence is structurally
+  blind to model/contract bugs; a small runtime fix pass beats a clean skip.
+  Promoted by tripwire (recurred 6 days).
 
 ## Self-Update
 

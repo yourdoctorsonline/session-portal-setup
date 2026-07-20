@@ -21,6 +21,13 @@ case "$CMD" in
   append)
     RUN="${2:?run-slug}"; PHASE="${3:?phase}"; VERDICT="${4:?PASS|FAIL|SKIP}"; NOTE="${5:-}"
     case "$VERDICT" in PASS|FAIL|SKIP) ;; *) echo "verdict must be PASS, FAIL, or SKIP" >&2; exit 2;; esac
+    # Closed phase vocabulary (graphify-style enum guard): free-form names drifted
+    # to 34 variants in two weeks, silently undercounting verification in any
+    # cross-run analysis. Historical rows are untouched; new appends must conform.
+    case "$PHASE" in
+      spec|plan|build|ship|learn|verify:watch|verify:zerotrust|verify:review|verify:runtime) ;;
+      *) echo "phase must be one of: spec plan build ship learn verify:watch verify:zerotrust verify:review verify:runtime (got: $PHASE)" >&2; exit 2;;
+    esac
     mkdir -p .eng-harness
     SHA="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
     BRANCH="$(git branch --show-current 2>/dev/null || echo none)"

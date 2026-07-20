@@ -12,21 +12,6 @@ LAUNCH="$HOME/.claude-launcher/bin/launch-claude-session.sh"
 c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_grn=$'\033[1;32m'; c_cyn=$'\033[1;36m'
 c_yel=$'\033[1;33m'; c_bold=$'\033[1m'
 
-# Accounts offered in the "new session" prompt — auto-detected, never hardcoded.
-# "default" (the plain ~/.claude login) is always first; every ~/.claude-<name>
-# the user has actually logged into shows up automatically. (Same rule as the
-# web dashboard's available_accounts.)
-list_accounts() {
-  local names="default" nm sub
-  for d in "$HOME"/.claude-*; do
-    [ -d "$d" ] || continue
-    nm="$(basename "$d")"; sub="${nm#.claude-}"
-    case "$sub" in ""|launcher|swap-backup*) continue ;; esac
-    names="$names / $sub"
-  done
-  printf '%s' "$names"
-}
-
 SESS=()
 load_sessions() {
   SESS=()
@@ -69,7 +54,7 @@ new_claude() {
   printf '\n  %sNew Claude session%s\n' "$c_bold" "$c_reset"
   printf '  Name: '; read -r name
   [ -n "$name" ] || name="claude-$(date +%H%M%S)"
-  printf '  Account [%s] (Enter=default): ' "$(list_accounts)"; read -r acct
+  printf '  Account [default / personal / ydo] (Enter=default): '; read -r acct
   [ -n "$acct" ] || acct="default"
   printf '  Permissions [bypass / auto] (Enter=bypass): '; read -r perm
   [ -n "$perm" ] || perm="bypass"
@@ -92,7 +77,7 @@ kill_one() {
   local pick="${SESS[$((n-1))]}"; [ -n "$pick" ] || return
   local name; name="$(printf '%s' "$pick" | cut -f1)"
   printf '  Kill %s%s%s? [y/N] ' "$c_yel" "$name" "$c_reset"; read -r yn
-  [ "$yn" = "y" ] && "$TMUX_BIN" kill-session -t "=$name"
+  [ "$yn" = "y" ] && "$TMUX_BIN" kill-session -t "$name"
 }
 
 while true; do

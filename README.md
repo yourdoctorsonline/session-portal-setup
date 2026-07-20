@@ -4,16 +4,10 @@ Session Launcher is a web page that runs on your own computer and lets you start
 
 ## Setup
 
-**On a Mac,** open Terminal and run:
+On a Mac, open Terminal and run:
 
 ```
-bash <(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)
-```
-
-**On Windows,** open PowerShell and run:
-
-```
-irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex
+curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh | bash
 ```
 
 The setup asks you a few questions and handles the rest.
@@ -27,7 +21,7 @@ The setup asks you a few questions and handles the rest.
 
 ## Windows
 
-Windows needs WSL2 (a Linux layer) to run the portal. The command above handles it — if WSL isn't installed yet it tells you to run `wsl --install`, reboot, and paste the command again. The [setup guide](GUIDE.md) has the details.
+Windows needs a one-time WSL2 pre-step before the command above. The [setup guide](GUIDE.md) walks you through it.
 
 ## Full guide
 

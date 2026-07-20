@@ -2,20 +2,22 @@
 # launch-claude-session.sh
 # -----------------------------------------------------------------------------
 # Launch a new REMOTE-CONTROL Claude Code session in a chosen working directory,
-# inside a detached tmux session, under a chosen account config.
+# inside a detached tmux session, using one of the two account configs.
 #
-#   - targets a chosen working directory via LAUNCH_CWD (default: the user's home)
+# This mirrors the claude-personal / claude-ydo zsh functions in ~/.zshrc, but:
+#   - targets a chosen working directory via LAUNCH_CWD (default: the agentic-os
+#     repo; the aliases don't cd)
 #   - names the session (tmux name AND Claude's --remote-control name) with what
 #     you typed, so it's identifiable in the Claude mobile app
 #   - never attaches (headless), so it can be driven remotely instead of locally
-#   - defaults the effort to ultracode (override per launch with LAUNCH_EFFORT)
 #
 # The --remote-control flag is what exposes the running session for control from
-# the Claude mobile app (and the in-app terminal).
+# the Claude mobile app (and the in-app terminal) — the same mechanism the
+# aliases use, just named and pointed at the chosen directory.
 #
 # Usage:
 #   launch-claude-session.sh <account> <perm> [session name...]
-#     account : default | <name>  (default = plain ~/.claude; <name> = ~/.claude-<name>)
+#     account : personal | ydo
 #     perm    : auto | bypass
 #     name    : free-text session name (may contain spaces); optional
 #
@@ -74,42 +76,6 @@ esac
 [ -n "$CLAUDE_BIN" ] && [ -x "$CLAUDE_BIN" ] || fail "no-claude"
 [ -d "$REPO" ] || fail "no-repo"
 
-# Pre-trust the launch folder. Claude Code shows a first-run "Do you trust the
-# files in this folder?" security prompt for any not-yet-trusted directory. A
-# headless remote-control launch has NO ONE to answer it, so claude blocks there
-# forever: the session never registers (empty URL), the Claude app shows nothing,
-# and the ttyd terminal shows a stuck prompt / black screen. That's the "black
-# screen on launch" everyone hits on a fresh install (every folder is untrusted).
-# Marking hasTrustDialogAccepted for this folder in the account's .claude.json is
-# exactly what clicking "Yes, I trust this folder" persists — so claude skips the
-# prompt and starts the session. (Default account => ~/.claude.json; a named
-# account => its own <config-dir>/.claude.json.)
-if [ -n "$CONFIG_DIR" ]; then TRUST_JSON="$CONFIG_DIR/.claude.json"; else TRUST_JSON="$HOME/.claude.json"; fi
-PATH="$EXTRA_PATH" python3 - "$TRUST_JSON" "$REPO" >/dev/null 2>&1 <<'PY' || true
-import json, os, sys
-f, repo = sys.argv[1], sys.argv[2]
-if os.path.exists(f):
-    try:
-        d = json.load(open(f))
-    except Exception:
-        sys.exit(0)  # never clobber a config we couldn't parse
-else:
-    d = {}
-projects = d.setdefault("projects", {})
-# Trust BOTH the given path and its resolved realpath — claude looks trust up by
-# the resolved cwd, and on macOS /var -> /private/var (and other volumes can be
-# symlinked), so the two can differ.
-for path in {repo, os.path.realpath(repo)}:
-    p = projects.setdefault(path, {})
-    p["hasTrustDialogAccepted"] = True
-    p.setdefault("allowedTools", [])
-tmp = f + ".launcher-tmp"
-with open(tmp, "w") as fh:
-    json.dump(d, fh, indent=2)
-os.chmod(tmp, 0o600)
-os.replace(tmp, f)
-PY
-
 # Trim whitespace; default the name to the alias-style timestamped form.
 NAME="$(printf '%s' "$NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 [ -n "$NAME" ] || NAME="claude-$ACCOUNT-$(date +%H%M%S)"
@@ -129,16 +95,6 @@ done
 # Unknown values are safe: claude warns and falls back to its default.
 EFFORT="${LAUNCH_EFFORT:-ultracode}"
 
-# Keep the session AUTONOMOUS. A launched session is remote-control (driven from
-# the phone), so the user is NOT at this machine's keyboard: Claude must DO the
-# work with its tools, not print commands for a human to run. Pinned in the
-# system prompt (strongest placement — survives a long session and re-anchors on
-# a fresh one). Note: --permission-mode/--dangerously-skip-permissions only
-# removes the *approval* gate; whether Claude actually calls a tool vs. prints
-# text is behavioral — this is what keeps it executing. Override or extend per
-# launch with LAUNCH_SYSTEM_PROMPT.
-EXEC_MODE_PROMPT="${LAUNCH_SYSTEM_PROMPT:-You are running in a remote-control session started from the Session Launcher. The user is driving you from a phone or another device and is away from this machine, so they cannot run anything by hand. Always DO the work yourself with your tools: run shell commands, file edits, git, and deploys via tool calls. NEVER print a block of commands or manual steps for the user to run; executing them yourself is the entire purpose of this session. If a task needs CLI / deploy / git steps, run them and report the outcome.}"
-
 # Inner command run inside the tmux pane. Absolute paths + explicit PATH make it
 # independent of how the outer shell was invoked. exec binds the pane lifetime
 # to Claude, so the tmux session ends when the session ends.
@@ -148,7 +104,6 @@ INNER="export PATH=$(printf '%q' "$EXTRA_PATH"):\$PATH; \
 ${CONFIG_EXPORT}\
 exec $(printf '%q' "$CLAUDE_BIN") --permission-mode $PERM_MODE \
 --effort $(printf '%q' "$EFFORT") \
---append-system-prompt $(printf '%q' "$EXEC_MODE_PROMPT") \
 --name $(printf '%q' "$NAME") \
 --remote-control $(printf '%q' "$NAME")"
 

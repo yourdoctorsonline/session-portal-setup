@@ -235,6 +235,51 @@ def kill_session(name):
         return {"ok": False, "error": (r.stderr or r.stdout).strip() or "kill failed"}
     return {"ok": True}
 
+def scroll_session(name, direction):
+    """Scroll a session's terminal from outside it, for phones.
+
+    A ttyd terminal on a touchscreen can't be swiped to scroll — the finger
+    gesture never reaches the terminal's scrollback (with tmux mouse mode it's
+    eaten as a text selection; without it, tmux owns the alternate screen so
+    there's nothing for the browser to scroll). So the phone drives tmux's own
+    copy-mode from the server instead: "up" enters copy mode and pages up,
+    "down" pages back toward the bottom, "live" leaves copy mode to resume the
+    live prompt. The change is visible to the attached ttyd client because
+    copy-mode is a property of the pane, shared by every client on it.
+
+    "=" forces an exact name match (same reason as kill_session). down/live are
+    no-ops when the pane isn't in copy mode — that's the intended result (you're
+    already at the bottom), so their exit code is not treated as an error; only
+    a missing session is.
+    """
+    if not name:
+        return {"ok": False, "error": "no session name"}
+    if direction not in ("up", "down", "live"):
+        return {"ok": False, "error": "bad direction"}
+    sess = f"={name}"    # session target (exact match, like kill_session)
+    pane = f"={name}:"   # pane target — the trailing ":" is required: a bare
+                         # "=name" resolves as a session and copy-mode/send-keys
+                         # (which want a PANE) reject it ("can't find pane").
+    try:
+        if subprocess.run([TMUX, "has-session", "-t", sess],
+                          capture_output=True, text=True, timeout=8).returncode != 0:
+            return {"ok": False, "error": "no such session"}
+        if direction == "up":
+            cm = subprocess.run([TMUX, "copy-mode", "-t", pane],
+                                capture_output=True, text=True, timeout=8)
+            if cm.returncode != 0:
+                return {"ok": False, "error": (cm.stderr or cm.stdout).strip() or "scroll failed"}
+            subprocess.run([TMUX, "send-keys", "-t", pane, "-X", "halfpage-up"],
+                           capture_output=True, text=True, timeout=8)
+        else:
+            key = "halfpage-down" if direction == "down" else "cancel"
+            # No-op (non-zero) when not in copy mode is fine — already live.
+            subprocess.run([TMUX, "send-keys", "-t", pane, "-X", key],
+                           capture_output=True, text=True, timeout=8)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True}
+
 def list_dir(path):
     path = os.path.realpath(path or workspace_roots()[0])
     if not os.path.isdir(path):
@@ -549,6 +594,17 @@ iframe{border:0;width:100%;height:100%;display:block}
   text-decoration:none;-webkit-tap-highlight-color:transparent}
 #back:active{background:rgba(46,42,39,.92)}
 #back .a{font-size:17px;line-height:1}
+/* Scroll controls. A ttyd terminal can't be swiped to scroll on a phone, so
+   these drive tmux copy-mode server-side (POST /api/scroll). Right-edge,
+   vertically centred, same semi-transparent pill language as #back so they
+   don't obscure the terminal. Touch targets are 46px. */
+#scroll{position:fixed;right:calc(8px + env(safe-area-inset-right));top:50%;transform:translateY(-50%);
+  z-index:10;display:flex;flex-direction:column;gap:8px}
+#scroll button{width:46px;height:46px;border-radius:23px;border:1px solid #2e2a27;
+  background:rgba(26,24,23,.82);backdrop-filter:blur(8px);color:#efe9e2;font-size:20px;line-height:1;
+  display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent;cursor:pointer}
+#scroll button:active{background:rgba(46,42,39,.92)}
+#scroll .live{font-size:11px;font-weight:700;letter-spacing:.3px}
 /* Orientation note shown every time the terminal opens so folks aren't lost:
    keep working here OR carry on from the Claude app. Auto-fades after 15s; "Got
    it" clears it for this view (it returns next time a session is opened). */
@@ -565,6 +621,11 @@ iframe{border:0;width:100%;height:100%;display:block}
 </head><body>
 <a id="back" href="/" aria-label="Back to sessions"><span class="a">‹</span>Sessions</a>
 <iframe id="t" src="__SRC__" allow="clipboard-read;clipboard-write"></iframe>
+<div id="scroll">
+  <button data-d="up" aria-label="Scroll up">▲</button>
+  <button data-d="live" class="live" aria-label="Jump to live">LIVE</button>
+  <button data-d="down" aria-label="Scroll down">▼</button>
+</div>
 <div id="hint"><span>✦ Your session is live. Keep working right here in the terminal, or carry it on from the <b>Claude app</b> on your phone or computer — it's the same session, wherever you pick it up.</span><button id="hintx">Got it</button></div>
 <script>
 // Show the orientation note EVERY time a terminal is opened (no "remember" —
@@ -573,6 +634,15 @@ iframe{border:0;width:100%;height:100%;display:block}
   function hide(){h.classList.add('gone');setTimeout(function(){h.style.display='none'},420)}
   document.getElementById('hintx').addEventListener('click',hide);
   setTimeout(hide,15000);
+})();
+// Scroll controls: a phone can't swipe a ttyd terminal, so these ask the server
+// to drive tmux copy-mode for THIS session (name injected below). Fire-and-forget.
+(function(){var SESS=__NAME__,box=document.getElementById('scroll');if(!box||!SESS)return;
+  box.addEventListener('click',function(e){
+    var b=e.target.closest('button[data-d]');if(!b)return;
+    fetch('/api/scroll',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({name:SESS,dir:b.dataset.d})}).catch(function(){});
+  });
 })();
 var f=document.getElementById('t'),away=0,last=0;
 // Every iframe reload makes ttyd spawn a fresh PTY, and ttyd 1.7.7 leaks the
@@ -594,7 +664,8 @@ def term_page(name):
     src = f"http://{TSIP}:{TTYD_PORT}/?arg={urllib.parse.quote(name or '', safe='')}"
     return (TERM_PAGE
             .replace("__SRC__", html.escape(src, quote=True))
-            .replace("__TITLE__", html.escape(name or "Session")))
+            .replace("__TITLE__", html.escape(name or "Session"))
+            .replace("__NAME__", json.dumps(name or "")))
 
 class H(BaseHTTPRequestHandler):
     def _auth(self):
@@ -694,6 +765,8 @@ class H(BaseHTTPRequestHandler):
             self._json(set_default_cwd(b.get("path", "")))
         elif u.path == "/api/kill":
             self._json(kill_session(b.get("name", "")))
+        elif u.path == "/api/scroll":
+            self._json(scroll_session(b.get("name", ""), b.get("dir", "")))
         elif u.path == "/api/write":
             self._json(write_file(b.get("path", ""), b.get("content", "")))
         else:

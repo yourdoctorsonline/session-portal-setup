@@ -57,6 +57,14 @@ running system and mark it met/unmet in `audit.md` as you go.
 
 ## Record
 
+**FAIL rows are mandatory (no silent fix cycles).** The moment any layer rejects —
+a HIGH watch flag, a zero-trust REJECT, blocking review findings, a runtime
+failure — append a FAIL row with the finding BEFORE starting the fix cycle, then
+append the PASS after re-verification. A fix cycle must appear in the ledger as a
+FAIL→PASS pair; two PASS rows hide the catch and make the ledger unfalsifiable
+(230 rows, 0 FAILs was the historical result — a survivorship artifact, not a
+quality record).
+
 ```bash
 bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> verify:watch  PASS|FAIL|SKIP "note"
 bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> verify:zerotrust PASS|FAIL|SKIP "note"

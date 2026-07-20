@@ -23,6 +23,30 @@ Append to `wiki/methodology/eng-harness.md`:
 Codebase-specific gotchas discovered during build go to the PROJECT's own docs or
 wiki, not this skill's page.
 
+## 2b. Run the lesson tripwire (close the loop mechanically)
+
+After appending, run the recurring-lesson detector on the page you just wrote:
+
+```bash
+python3 .claude/skills/eng-harness/scripts/lesson_tripwire.py \
+  wiki/methodology/eng-harness.md          # personal-dir install: swap the
+  # script/skill paths for ~/.claude-personal/skills/eng-harness/...
+```
+
+For every PROMOTION CANDIDATE (a lesson recurring on ≥2 distinct dates with no
+covering Rule), do ONE of:
+- **Propose promotion** — draft the Rule line and present it to the user for
+  approval. Promotion is user-approved, never silent (their call: "when I say so").
+- **Decline with a dated note** — append `(promotion declined YYYY-MM-DD: reason)`
+  to the cluster's newest entry on the learnings page.
+
+Ignoring a candidate without one of these two is a silent skip — a Law 7
+violation. Coverage marks are ADVISORY: a "likely covered by rule X" candidate
+still needs a quick confirm that the rule genuinely covers the lesson (token
+overlap is not semantics — L2 review 2026-07-19). Single-day clusters need no
+action. The script is fail-open (exit 0 on infra errors); `--strict` exists for
+future CI use.
+
 ## 3. Close the run
 
 - `run.md` frontmatter/status → `complete`, date, final commit sha.

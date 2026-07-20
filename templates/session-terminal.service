@@ -5,10 +5,6 @@
 Description=Session Launcher terminal (ttyd)
 
 [Service]
-# ttyd 1.7.7 leaks a pty master fd per terminal; without headroom it hits the
-# default limit and every new terminal fails with EMFILE. Raise the ceiling to
-# 4096; session-watchdog.timer recycles ttyd before it gets anywhere near it.
-LimitNOFILE=4096
 ExecStart=%h/.claude-launcher/bin/portal.sh
 Restart=always
 RestartSec=3
