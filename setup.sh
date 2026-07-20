@@ -192,13 +192,25 @@ ws_repo_state() {
 
 # tsip — first line of `tailscale ip -4`, probing the usual install locations
 # because a piped-in installer inherits a bare PATH.
-tsip() {
-  local ts=""
-  for c in /opt/homebrew/bin/tailscale /usr/local/bin/tailscale /usr/bin/tailscale; do
-    [ -x "$c" ] && { ts="$c"; break; }
+# ts_bin -> echoes a usable tailscale CLI path, or nothing (rc 1). Checks the macOS
+# GUI app's IN-BUNDLE binary FIRST (the common case — the menu-bar app doesn't put
+# `tailscale` on PATH), then Homebrew locations, then PATH. Overridable for tests via
+# SETUP_FAKE_TSAPP (a dir standing in for /Applications/Tailscale.app).
+ts_bin() {
+  local c
+  for c in \
+    "${SETUP_FAKE_TSAPP:-/Applications/Tailscale.app}/Contents/MacOS/Tailscale" \
+    /opt/homebrew/bin/tailscale /usr/local/bin/tailscale /usr/bin/tailscale \
+    "$(command -v tailscale 2>/dev/null)"; do
+    [ -n "$c" ] && [ -x "$c" ] && { printf '%s\n' "$c"; return 0; }
   done
-  [ -n "$ts" ] || ts="$(command -v tailscale 2>/dev/null)"
-  [ -n "$ts" ] || return 0
+  return 1
+}
+
+# tsip — the tailnet IPv4, via whichever tailscale CLI ts_bin resolves (empty if none/down).
+tsip() {
+  local ts
+  ts="$(ts_bin)" || return 0
   "$ts" ip -4 2>/dev/null | head -1
 }
 
@@ -523,12 +535,19 @@ TS_IP=""
 if preset_wants "$PRESET" tailscale; then
 step_banner "Setting up Tailscale (your private network)"
 if [ "$PLATFORM" = "mac" ]; then
-  if ! have tailscale; then
-    run "installing Tailscale" brew install --cask tailscale
-  else
-    ok "Tailscale already installed."
+  # Prefer the menu-bar app (easiest sign-in). Install it only if neither the app nor a
+  # command-line tailscale already exists.
+  if [ ! -e "/Applications/Tailscale.app" ] && ! have tailscale && [ -z "$(ts_bin)" ]; then
+    run "installing Tailscale (menu-bar app)" brew install --cask tailscale
   fi
-  run "opening Tailscale" open -a Tailscale
+  if [ -e "/Applications/Tailscale.app" ]; then
+    run "opening Tailscale" open -a Tailscale
+    ok "Tailscale app opened — its icon is in the top-right menu bar."
+  elif [ -n "$(ts_bin)" ]; then
+    ok "Tailscale (command-line) is installed."
+  else
+    warn "Couldn't install Tailscale automatically — get it from https://tailscale.com/download, then re-run me."
+  fi
 elif [ "$PLATFORM" = "wsl" ]; then
   if ! have tailscale; then
     run "installing Tailscale" /bin/bash -c "curl -fsSL https://tailscale.com/install.sh | sh"
@@ -553,9 +572,27 @@ WSLCONF
   run "starting Tailscale" sudo systemctl enable --now tailscaled
 fi
 
-# bring the connection up if we don't have an IP yet
+# Sign in / bring the connection up if we don't have an address yet.
 if [ -z "$(tsip)" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
-  run "connecting to Tailscale" sudo tailscale up
+  TS_BIN="$(ts_bin)"
+  if [ "$PLATFORM" = "mac" ] && [ -e "/Applications/Tailscale.app" ]; then
+    # GUI app: sign-in is a menu-bar click. Nudge the browser login too (best-effort).
+    [ -n "$TS_BIN" ] && "$TS_BIN" up >/dev/null 2>&1 &
+    say ""
+    say "  ${C_BOLD}Sign in to Tailscale on your Mac:${C_RESET}"
+    say "    1. Click the Tailscale icon in the top-right menu bar (near the clock)."
+    say "    2. Choose 'Log in...' and sign in with the SAME account as your phone."
+    say "  A browser tab may open on its own — if it does, just sign in there."
+  elif [ "$PLATFORM" = "mac" ] && [ -n "$TS_BIN" ]; then
+    # Command-line variant: make sure the background service runs, then sign in.
+    "$TS_BIN" status >/dev/null 2>&1 \
+      || run "starting the Tailscale service" sudo "${TS_BIN%/*}/tailscaled" install-system-daemon 2>/dev/null || true
+    say ""
+    say "  Signing in to Tailscale — open the link it prints below and sign in:"
+    sudo "$TS_BIN" up 2>&1 | sed 's/^/    /' || true
+  elif [ "$PLATFORM" = "wsl" ]; then
+    run "connecting to Tailscale" sudo tailscale up
+  fi
 fi
 
 # the same-account warning, boxed so it's impossible to miss
@@ -571,16 +608,20 @@ if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
   say "DRYRUN: would wait for a Tailscale IP here."
   TS_IP="100.64.0.1"   # placeholder so later steps have something to print
 else
-  say "Waiting for Tailscale to connect..."
+  say "Waiting for Tailscale to connect (sign in on the Mac if you haven't yet)..."
   TS_IP=""
-  for i in $(seq 1 60); do
+  for i in $(seq 1 90); do
     TS_IP="$(tsip)"
     [ -n "$TS_IP" ] && break
+    if [ "$i" = "30" ]; then
+      say "  ...still waiting. If you haven't: click the Tailscale menu-bar icon and choose 'Log in...'."
+    fi
     sleep 2
   done
   if [ -z "$TS_IP" ]; then
-    fail_msg "Tailscale didn't connect within two minutes."
-    say "Open the Tailscale app, make sure you're signed in and connected, then re-run me."
+    warn "Tailscale isn't connected yet."
+    say "  Finish signing in on the Mac (Tailscale menu-bar icon -> Log in, same account as"
+    say "  your phone), then re-run me — it's safe to re-run and picks up right here."
     exit 1
   fi
   ok "Tailscale connected — your address is $TS_IP"
