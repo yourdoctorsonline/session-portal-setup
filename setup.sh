@@ -436,12 +436,16 @@ if [ "$PLATFORM" = "mac" ]; then
       fi
       ok "Command Line Tools installed."
     fi
-    # Install Homebrew NON-interactively so it can't hang waiting for a RETURN keypress
-    # (that hang, in a curl|bash shell, is why brew often never finishes installing).
+    # Install Homebrew NON-interactively (no RETURN-keypress hang) with up to 3 tries to
+    # ride out a transient/network failure. Re-resolve after each attempt.
     say "Installing Homebrew (the tool that installs other tools)..."
-    run "installing Homebrew" env NONINTERACTIVE=1 /bin/bash -c \
-      "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    BREW="$(brew_bin)"
+    for _a in 1 2 3; do
+      env NONINTERACTIVE=1 /bin/bash -c \
+        "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" 2>&1 | sed 's/^/    /'
+      BREW="$(brew_bin)"; [ -n "$BREW" ] && break
+      warn "Homebrew attempt $_a didn't land — retrying..."
+      sleep 3
+    done
   fi
   if [ -n "$BREW" ]; then
     if [ "${SETUP_DRYRUN:-0}" != "1" ]; then
@@ -455,10 +459,24 @@ if [ "$PLATFORM" = "mac" ]; then
   for tool in tmux ttyd qrencode; do
     if have "$tool"; then
       ok "$tool already installed."
+    elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+      say "DRYRUN: would install $tool"
     elif [ -n "$BREW" ]; then
-      run "installing $tool" "$BREW" install "$tool"
+      # Install with up to 3 tries; re-apply shellenv + re-check between attempts so an
+      # off-PATH or transient formula failure doesn't leave the tool missing. Never skip.
+      _ok=0
+      for _a in 1 2 3; do
+        "$BREW" install "$tool" 2>&1 | sed 's/^/    /'
+        eval "$("$BREW" shellenv)" 2>/dev/null || true
+        { have "$tool" || [ -x "$(dirname "$BREW")/$tool" ]; } && { _ok=1; break; }
+        warn "$tool attempt $_a didn't land — refreshing and retrying..."
+        "$BREW" update >/dev/null 2>&1 || true
+        sleep 2
+      done
+      [ "$_ok" = 1 ] && ok "$tool installed." \
+        || warn "Couldn't install $tool after 3 tries. Run  \"$BREW\" install $tool  yourself, then re-run me."
     else
-      warn "Skipping $tool for now — it needs Homebrew."
+      warn "Can't install $tool — Homebrew isn't available (see the note above)."
     fi
   done
 elif [ "$PLATFORM" = "wsl" ]; then
@@ -836,6 +854,36 @@ if [ "${SETUP_WORKSPACE_REPO:-1}" = "1" ]; then
               say  "  (or  git clone https://github.com/yourdoctorsonline/your-doctors-online.git \"$WS_DIR\")"
             fi ;;
         esac ;;
+    esac
+  fi
+fi
+
+# ---- optional: RustDesk (remote management / remote login) ------------------
+# Opt-in on every preset (default N — it's a remote-access tool). SETUP_RUSTDESK=0 skips
+# with no prompt; =1 installs without asking. Fail-open.
+if [ "${SETUP_RUSTDESK:-}" != "0" ] && [ "$PLATFORM" = "mac" ]; then
+  step_banner "Remote management (optional)"
+  if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+    say "DRYRUN: would offer RustDesk (remote desktop). SETUP_RUSTDESK=0 skips, =1 auto-installs."
+  elif [ -e "/Applications/RustDesk.app" ]; then
+    ok "RustDesk already installed."
+  else
+    _RD="${SETUP_RUSTDESK:-}"
+    [ -z "$_RD" ] && ask _RD "Install RustDesk so you can remote in to this Mac from elsewhere? [y/N]" "N"
+    case "$_RD" in
+      1|[Yy]*)
+        BREW="$(brew_bin)"
+        if [ -n "$BREW" ]; then
+          "$BREW" install --cask rustdesk 2>&1 | sed 's/^/    /'
+          if [ -e "/Applications/RustDesk.app" ]; then
+            ok "RustDesk installed — open it to set your remote access ID + password."
+          else
+            warn "Couldn't install RustDesk — get it from https://rustdesk.com/download, then re-run me."
+          fi
+        else
+          warn "RustDesk needs Homebrew — install it from https://rustdesk.com/download instead."
+        fi ;;
+      *) say "  [skip] RustDesk — add it later if you want remote access." ;;
     esac
   fi
 fi
