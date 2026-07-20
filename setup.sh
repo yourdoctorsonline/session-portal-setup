@@ -141,6 +141,15 @@ brew_bin() {
   return 1
 }
 
+# ensure_brew_on_path BREW [ZPROFILE] — idempotently persist a `brew shellenv` line to the
+# login profile so brew stays on PATH in future shells (heals the "command not found"
+# permanently, no manual PATH edit). A second call is a no-op.
+ensure_brew_on_path() {
+  local brew="$1" zp="${2:-$HOME/.zprofile}"
+  grep -q 'brew shellenv' "$zp" 2>/dev/null && return 0
+  printf '\n# Added by Session Launcher setup\neval "$(%s shellenv)"\n' "$brew" >> "$zp"
+}
+
 # normalize_preset RAW -> echoes canonical full|harness|portal (rc 0); else nothing (rc 1).
 # Accepts the menu numbers 1/2/3 or the names, case-insensitive.
 normalize_preset() {
@@ -409,24 +418,36 @@ step_banner "Installing the basic tools"
 if [ "$PLATFORM" = "mac" ]; then
   BREW="$(brew_bin)"
   if [ -z "$BREW" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
-    # Homebrew needs Apple's Command Line Tools first — fresh Macs don't have them, and
-    # without them the Homebrew install fails and every later `brew` says "not found".
+    # Xcode Command Line Tools are Homebrew's prerequisite. Trigger + WAIT for them so a
+    # single run heals (fresh Macs don't have them; the only thing you do is click Install).
     if ! xcode-select -p >/dev/null 2>&1; then
-      warn "Your Mac needs Apple's Command Line Tools before Homebrew can install."
+      say "Your Mac needs Apple's Command Line Tools first — starting that now."
       run "requesting Command Line Tools" xcode-select --install 2>/dev/null || true
+      say "A small Apple dialog should appear — click 'Install'. I'll wait for it to finish"
+      say "(this can take several minutes)..."
+      for _i in $(seq 1 120); do
+        xcode-select -p >/dev/null 2>&1 && break
+        printf '.'; sleep 10
+      done
       say ""
-      say "A small Apple dialog should have popped up — click 'Install' and let it finish"
-      say "(a few minutes), then re-run me. I'll pick up right here."
-      exit 0
+      if ! xcode-select -p >/dev/null 2>&1; then
+        warn "Command Line Tools still aren't ready. Finish the Apple dialog, then re-run me."
+        exit 0
+      fi
+      ok "Command Line Tools installed."
     fi
+    # Install Homebrew NON-interactively so it can't hang waiting for a RETURN keypress
+    # (that hang, in a curl|bash shell, is why brew often never finishes installing).
     say "Installing Homebrew (the tool that installs other tools)..."
-    run "installing Homebrew" /bin/bash -c \
+    run "installing Homebrew" env NONINTERACTIVE=1 /bin/bash -c \
       "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     BREW="$(brew_bin)"
   fi
   if [ -n "$BREW" ]; then
-    # Put brew (and anything it installs) on PATH for the rest of this run.
-    [ "${SETUP_DRYRUN:-0}" != "1" ] && eval "$("$BREW" shellenv)" 2>/dev/null || true
+    if [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+      eval "$("$BREW" shellenv)" 2>/dev/null || true   # this run's PATH
+      ensure_brew_on_path "$BREW"                        # future shells (idempotent, no manual edit)
+    fi
     ok "Homebrew ready."
   elif [ "${SETUP_DRYRUN:-0}" != "1" ]; then
     warn "Homebrew still isn't available. Install it from https://brew.sh, then re-run me."
