@@ -130,6 +130,17 @@ upsert_env() {
 have()     { command -v "$1" >/dev/null 2>&1; }
 creds_ok() { [ -f "$1/.credentials.json" ]; }
 
+# brew_bin -> echoes a usable Homebrew path, or nothing (rc 1). Checks the real install
+# locations (Apple-Silicon /opt/homebrew, Intel /usr/local) even when brew isn't on PATH
+# — the #1 cause of "brew: command not found" mid-install. Overridable via SETUP_FAKE_BREW.
+brew_bin() {
+  local c
+  for c in "${SETUP_FAKE_BREW:-/opt/homebrew/bin/brew}" /usr/local/bin/brew "$(command -v brew 2>/dev/null)"; do
+    [ -n "$c" ] && [ -x "$c" ] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
 # normalize_preset RAW -> echoes canonical full|harness|portal (rc 0); else nothing (rc 1).
 # Accepts the menu numbers 1/2/3 or the names, case-insensitive.
 normalize_preset() {
@@ -396,26 +407,37 @@ fi
 if preset_wants "$PRESET" tools; then
 step_banner "Installing the basic tools"
 if [ "$PLATFORM" = "mac" ]; then
-  if ! have brew; then
+  BREW="$(brew_bin)"
+  if [ -z "$BREW" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+    # Homebrew needs Apple's Command Line Tools first — fresh Macs don't have them, and
+    # without them the Homebrew install fails and every later `brew` says "not found".
+    if ! xcode-select -p >/dev/null 2>&1; then
+      warn "Your Mac needs Apple's Command Line Tools before Homebrew can install."
+      run "requesting Command Line Tools" xcode-select --install 2>/dev/null || true
+      say ""
+      say "A small Apple dialog should have popped up — click 'Install' and let it finish"
+      say "(a few minutes), then re-run me. I'll pick up right here."
+      exit 0
+    fi
     say "Installing Homebrew (the tool that installs other tools)..."
     run "installing Homebrew" /bin/bash -c \
       "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    # bring brew onto PATH for the rest of this run (Apple Silicon vs Intel)
-    if [ "${SETUP_DRYRUN:-0}" != "1" ]; then
-      if [ -x /opt/homebrew/bin/brew ]; then
-        eval "$(/opt/homebrew/bin/brew shellenv)"
-      elif [ -x /usr/local/bin/brew ]; then
-        eval "$(/usr/local/bin/brew shellenv)"
-      fi
-    fi
-  else
-    ok "Homebrew already installed."
+    BREW="$(brew_bin)"
+  fi
+  if [ -n "$BREW" ]; then
+    # Put brew (and anything it installs) on PATH for the rest of this run.
+    [ "${SETUP_DRYRUN:-0}" != "1" ] && eval "$("$BREW" shellenv)" 2>/dev/null || true
+    ok "Homebrew ready."
+  elif [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+    warn "Homebrew still isn't available. Install it from https://brew.sh, then re-run me."
   fi
   for tool in tmux ttyd qrencode; do
     if have "$tool"; then
       ok "$tool already installed."
+    elif [ -n "$BREW" ]; then
+      run "installing $tool" "$BREW" install "$tool"
     else
-      run "installing $tool" brew install "$tool"
+      warn "Skipping $tool for now — it needs Homebrew."
     fi
   done
 elif [ "$PLATFORM" = "wsl" ]; then
@@ -538,7 +560,12 @@ if [ "$PLATFORM" = "mac" ]; then
   # Prefer the menu-bar app (easiest sign-in). Install it only if neither the app nor a
   # command-line tailscale already exists.
   if [ ! -e "/Applications/Tailscale.app" ] && ! have tailscale && [ -z "$(ts_bin)" ]; then
-    run "installing Tailscale (menu-bar app)" brew install --cask tailscale
+    BREW="$(brew_bin)"
+    if [ -n "$BREW" ]; then
+      run "installing Tailscale (menu-bar app)" "$BREW" install --cask tailscale
+    else
+      warn "Can't install Tailscale without Homebrew — get it from https://tailscale.com/download, then re-run me."
+    fi
   fi
   if [ -e "/Applications/Tailscale.app" ]; then
     run "opening Tailscale" open -a Tailscale
