@@ -38,8 +38,8 @@ warn()     { printf '%s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*"; }
 fail_msg() { printf '%s✗ %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; }
 
 step_banner() {
-  # step_banner N TITLE
-  printf '\n%s%s— Step %s of 8: %s —%s\n' "$C_BOLD" "$C_CYAN" "$1" "$2" "$C_RESET"
+  # step_banner TITLE  (step count varies by preset, so no "N of M")
+  printf '\n%s%s— %s —%s\n' "$C_BOLD" "$C_CYAN" "$1" "$C_RESET"
 }
 
 # ask VAR "prompt" "default"
@@ -129,6 +129,66 @@ upsert_env() {
 
 have()     { command -v "$1" >/dev/null 2>&1; }
 creds_ok() { [ -f "$1/.credentials.json" ]; }
+
+# normalize_preset RAW -> echoes canonical full|harness|portal (rc 0); else nothing (rc 1).
+# Accepts the menu numbers 1/2/3 or the names, case-insensitive.
+normalize_preset() {
+  local r
+  r="$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')"
+  case "$r" in
+    1|full)    echo "full";    return 0 ;;
+    2|harness) echo "harness"; return 0 ;;
+    3|portal)  echo "portal";  return 0 ;;
+    *)         return 1 ;;
+  esac
+}
+
+# preset_wants PRESET COMPONENT -> rc 0 if that preset installs that component.
+# full = everything; harness = only the YDO Agentic Harness; portal = everything
+# except the harness and extra-account sign-in.
+preset_wants() {
+  local p="$1" c="$2"
+  case "$p" in
+    full) return 0 ;;
+    harness) [ "$c" = "harness" ] && return 0 ; return 1 ;;
+    portal)
+      case "$c" in
+        tools|signin|tailscale|portal|workspace) return 0 ;;
+        *) return 1 ;;
+      esac ;;
+    *) return 1 ;;
+  esac
+}
+
+# any_creds -> rc 0 if a completed Claude login exists in ~/.claude OR any ~/.claude-*
+# config dir (multi-account setups keep the primary login outside ~/.claude).
+any_creds() {
+  creds_ok "$HOME/.claude" && return 0
+  local d
+  for d in "$HOME"/.claude-*; do
+    [ -d "$d" ] && creds_ok "$d" && return 0
+  done
+  return 1
+}
+
+# ws_repo_state DIR -> echoes what to do with the shared-workspace target dir:
+#   pull     = DIR is already the your-doctors-online repo (has .git + that remote)
+#   occupied = DIR exists and is non-empty but is NOT that repo (don't touch it)
+#   clone    = DIR is absent or empty (safe to clone into)
+ws_repo_state() {
+  local d="$1"
+  # Match the EXACT org/repo at a boundary (optional .git, then space/end) so a fork
+  # (someone/your-doctors-online) or look-alike (…-online-DIFFERENT) is NOT treated as
+  # the canonical workspace.
+  if [ -d "$d/.git" ] && git -C "$d" remote -v 2>/dev/null \
+       | grep -Eq "yourdoctorsonline/your-doctors-online(\.git)?([[:space:]]|$)"; then
+    echo pull
+  elif [ -e "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
+    echo occupied
+  else
+    echo clone
+  fi
+}
 
 # tsip — first line of `tailscale ip -4`, probing the usual install locations
 # because a piped-in installer inherits a bare PATH.
@@ -223,13 +283,51 @@ ENV_FILE="$LAUNCHER_DIR/portal.env"
 REPO_URL="https://github.com/yourdoctorsonline/session-portal-setup/archive/refs/heads/main.tar.gz"
 
 say "${C_BOLD}Session Launcher — team setup${C_RESET}"
-say "This gets you from a blank machine to a phone-reachable portal. It's safe to"
-say "re-run: anything already done gets skipped."
+say "This sets up Claude Code tooling on your machine. Pick what you want below."
+say "It's safe to re-run: anything already done gets skipped."
+
+# ---- preset: choose what to install -----------------------------------------
+# SETUP_PRESET=full|harness|portal skips the menu (also lets DRYRUN pick full).
+PRESET=""
+if [ -n "${SETUP_PRESET:-}" ]; then
+  PRESET="$(normalize_preset "$SETUP_PRESET")" || PRESET=""
+  [ -n "$PRESET" ] || warn "SETUP_PRESET='$SETUP_PRESET' isn't valid — showing the menu."
+fi
+if [ -z "$PRESET" ]; then
+  say ""
+  say "${C_BOLD}What do you want to set up?${C_RESET}"
+  say ""
+  say "  ${C_BOLD}1) Full Session Launcher${C_RESET}"
+  say "     Run Claude Code from your phone over your private network, plus the YDO"
+  say "     Agentic Harness. Installs tmux/ttyd, signs you in, sets up Tailscale, the"
+  say "     phone portal, and the harness. (The whole thing.)"
+  say ""
+  say "  ${C_BOLD}2) YDO Agentic Harness only${C_RESET}"
+  say "     Just the build-discipline harness for Claude Code: the spec -> plan ->"
+  say "     build -> verify -> ship skill plus its merge-gate and compaction hooks,"
+  say "     wired into your global Claude settings. No sign-in, no Tailscale, no portal."
+  say ""
+  say "  ${C_BOLD}3) Portal only${C_RESET}"
+  say "     The phone-reachable portal, without the harness."
+  say ""
+  while [ -z "$PRESET" ]; do
+    ask _PCHOICE "Choose 1, 2, or 3" "1"
+    PRESET="$(normalize_preset "$_PCHOICE")" || PRESET=""
+    [ -n "$PRESET" ] || warn "Please type 1, 2, or 3."
+  done
+fi
+case "$PRESET" in
+  full)    PRESET_LABEL="Full Session Launcher" ;;
+  harness) PRESET_LABEL="YDO Agentic Harness only" ;;
+  portal)  PRESET_LABEL="Portal only" ;;
+esac
+say ""
+ok "Installing: $PRESET_LABEL"
 
 # ---- STEP 1: machine check --------------------------------------------------
 # Runs BEFORE anything touches the disk or network (AC-TI-003: an unsupported
 # machine must get the Windows/WSL guidance and exit 2 with zero side effects).
-step_banner 1 "Checking your machine"
+step_banner "Checking your machine"
 PLATFORM="$(platform_detect)"; PLAT_RC=$?
 case "$PLATFORM" in
   mac)
@@ -283,7 +381,8 @@ else
 fi
 
 # ---- STEP 2: basics (package tools) -----------------------------------------
-step_banner 2 "Installing the basic tools"
+if preset_wants "$PRESET" tools; then
+step_banner "Installing the basic tools"
 if [ "$PLATFORM" = "mac" ]; then
   if ! have brew; then
     say "Installing Homebrew (the tool that installs other tools)..."
@@ -324,42 +423,71 @@ elif [ "$PLATFORM" = "wsl" ]; then
     say "  sudo snap install ttyd --classic"
   fi
 fi
-
-# ---- STEP 3: Claude Code install + login ------------------------------------
-step_banner 3 "Installing Claude Code and signing in"
-if have claude; then
-  ok "Claude Code already installed."
 else
-  say "Installing Claude Code..."
-  run "installing Claude Code" /bin/bash -c "curl -fsSL https://claude.ai/install.sh | bash"
-  # the installer drops the binary in ~/.local/bin
-  case ":$PATH:" in
-    *":$HOME/.local/bin:"*) : ;;
-    *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
-  esac
+  say "  [skip] basic tools — not needed for: $PRESET_LABEL"
 fi
 
-if creds_ok "$HOME/.claude"; then
-  ok "You're already signed in to Claude."
-elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
-  say "DRYRUN: would open Claude for interactive sign-in."
-else
-  say ""
-  say "Claude will open now. Sign in, then type  /exit  to come back here."
-  say "(Press Enter when you're ready.)"
-  read -r _ < /dev/tty 2>/dev/null || true
-  claude < /dev/tty > /dev/tty 2>&1 || true
-  if creds_ok "$HOME/.claude"; then
-    ok "Signed in to Claude."
+# ---- STEP 3: Claude Code install + sign-in ----------------------------------
+# Install the CLI only for presets that RUN it live (portal/full). The harness preset
+# just needs it present (the skill + hooks land under ~/.claude either way), so it
+# warns-if-absent rather than doing a network install — keeping "harness only" to
+# exactly the skill + hooks. Sign-in is a SEPARATE, resilient step.
+if preset_wants "$PRESET" signin; then
+  step_banner "Installing Claude Code"
+  if have claude; then
+    ok "Claude Code already installed."
+  elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+    say "DRYRUN: would install Claude Code."
   else
-    fail_msg "It doesn't look like the sign-in finished."
-    say "Run  claude  yourself, sign in, type /exit, then re-run this installer."
-    exit 1
+    say "Installing Claude Code..."
+    run "installing Claude Code" /bin/bash -c "curl -fsSL https://claude.ai/install.sh | bash"
+    case ":$PATH:" in
+      *":$HOME/.local/bin:"*) : ;;
+      *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
+    esac
+  fi
+  if ! have claude && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+    warn "Claude Code isn't on PATH yet — if later steps can't find it, open a new"
+    say  "  terminal (or add ~/.local/bin to your PATH) and re-run me."
+  fi
+elif preset_wants "$PRESET" harness && ! have claude && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+  warn "Claude Code isn't installed. The YDO Agentic Harness installs into your Claude"
+  say  "  config, but you need Claude Code to use it — install it from"
+  say  "  https://claude.ai/download  (or  curl -fsSL https://claude.ai/install.sh | bash)."
+fi
+
+if preset_wants "$PRESET" signin; then
+  step_banner "Signing in to Claude"
+  if any_creds; then
+    ok "You're already signed in to Claude."
+  elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+    say "DRYRUN: would sign in to Claude (interactive)."
+  elif [ ! -r /dev/tty ]; then
+    # No controlling terminal (piped without a tty) is exactly when the CLI crashes on
+    # process.stdout.isTTY — DON'T launch it. Guide instead, and continue.
+    warn "Can't open an interactive sign-in here (no terminal attached)."
+    say  "  Run  claude  yourself in a normal terminal, sign in, type /exit, then"
+    say  "  re-run me. Continuing with everything that doesn't need sign-in."
+  else
+    say ""
+    say "Claude will open now. Sign in, then type  /exit  to come back here."
+    say "(Press Enter when you're ready.)"
+    read -r _ < /dev/tty 2>/dev/null || true
+    claude < /dev/tty > /dev/tty 2>&1 || true
+    if any_creds; then
+      ok "Signed in to Claude."
+    else
+      # Non-fatal: a failed / crashed sign-in must NOT abort the whole install.
+      warn "It doesn't look like the sign-in finished."
+      say  "  Run  claude  yourself (in your normal terminal / with your account"
+      say  "  switcher), sign in, type /exit, then re-run me. Continuing for now."
+    fi
   fi
 fi
 
 # ---- STEP 4: extra accounts loop (AC-TI-005) --------------------------------
-step_banner 4 "Adding extra Claude accounts (optional)"
+if preset_wants "$PRESET" accounts; then
+step_banner "Adding extra Claude accounts (optional)"
 say "If you use more than one Claude account, add each one here. Otherwise just"
 say "press Enter to move on."
 while : ; do
@@ -386,9 +514,14 @@ while : ; do
     warn "That one didn't finish signing in — you can re-run me later to add it."
   fi
 done
+else
+  say "  [skip] extra accounts — not needed for: $PRESET_LABEL"
+fi
 
 # ---- STEP 5: Tailscale (AC-TI-007) ------------------------------------------
-step_banner 5 "Setting up Tailscale (your private network)"
+TS_IP=""
+if preset_wants "$PRESET" tailscale; then
+step_banner "Setting up Tailscale (your private network)"
 if [ "$PLATFORM" = "mac" ]; then
   if ! have tailscale; then
     run "installing Tailscale" brew install --cask tailscale
@@ -452,9 +585,13 @@ else
   fi
   ok "Tailscale connected — your address is $TS_IP"
 fi
+else
+  say "  [skip] Tailscale — not needed for: $PRESET_LABEL"
+fi
 
-# ---- STEP 6: portal install (AC-TI-008) -------------------------------------
-step_banner 6 "Installing the portal"
+# ---- STEP 6: portal + harness install ---------------------------------------
+if preset_wants "$PRESET" portal; then
+step_banner "Installing the portal"
 run "creating $BIN_DIR" mkdir -p "$BIN_DIR"
 if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
   say "DRYRUN: would copy $SRC/files/* into $BIN_DIR"
@@ -465,20 +602,24 @@ else
   }
   chmod +x "$BIN_DIR"/*.sh 2>/dev/null || true
 fi
+else
+  say "  [skip] phone portal — not needed for: $PRESET_LABEL"
+fi
 
-# Engineering harness skill (build conductor + learning tripwire) — optional
-# payload; present in repo layouts that ship harness/.
-if [ -d "$SRC/harness" ]; then
+# YDO Agentic Harness — the build-discipline skill (spec -> plan -> build -> verify
+# -> ship + learning tripwire). Only when the preset asks for it.
+if preset_wants "$PRESET" harness && [ -d "$SRC/harness" ]; then
+  step_banner "Installing the YDO Agentic Harness"
   SKILL_DIR="$HOME/.claude/skills/eng-harness"
   if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
-    say "DRYRUN: would install the engineering harness skill to $SKILL_DIR"
+    say "DRYRUN: would install the YDO Agentic Harness to $SKILL_DIR"
   else
     mkdir -p "$SKILL_DIR"
     if cp -R "$SRC/harness/." "$SKILL_DIR/" 2>/dev/null; then
       chmod +x "$SKILL_DIR"/scripts/*.sh 2>/dev/null || true
-      ok "Engineering harness skill installed (with learning tripwire)"
+      ok "YDO Agentic Harness installed (skill + learning tripwire)"
     else
-      warn "Couldn't install the engineering harness skill — portal still works."
+      warn "Couldn't install the YDO Agentic Harness skill."
     fi
   fi
 fi
@@ -486,8 +627,8 @@ fi
 # Enforcement hooks (merge-gate + compaction snapshot) — dropped into the user-level
 # hooks dir and wired into the global ~/.claude/settings.json so the harness gates
 # fire in every project this teammate opens. Fail-open: if we can't copy or wire them,
-# the portal + skill still land and we print the two lines to add by hand.
-if [ -d "$SRC/harness/hooks" ]; then
+# the skill still lands and we print the two lines to add by hand.
+if preset_wants "$PRESET" harness && [ -d "$SRC/harness/hooks" ]; then
   USER_HOOKS="$HOME/.claude/hooks"
   SETTINGS="$HOME/.claude/settings.json"
   if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
@@ -505,11 +646,12 @@ if [ -d "$SRC/harness/hooks" ]; then
         say  "    PreCompact:                 python3 \"$USER_HOOKS/precompact-run-snapshot.py\""
       fi
     else
-      warn "Couldn't copy the enforcement hooks — portal + skill still work."
+      warn "Couldn't copy the enforcement hooks — the harness skill still works."
     fi
   fi
 fi
 
+if preset_wants "$PRESET" portal; then
 if [ "$PLATFORM" = "mac" ]; then
   LA_DIR="$HOME/Library/LaunchAgents"
   run "creating $LA_DIR" mkdir -p "$LA_DIR"
@@ -544,9 +686,11 @@ elif [ "$PLATFORM" = "wsl" ]; then
       || warn "Couldn't enable the portal services automatically."
   fi
 fi
+fi
 
 # ---- STEP 6b: workspace folder (AC-TI-009) ----------------------------------
-step_banner 7 "Choosing your projects folder"
+if preset_wants "$PRESET" workspace; then
+step_banner "Choosing your projects folder"
 CUR_WS=""
 [ -f "$ENV_FILE" ] && CUR_WS="$(grep '^WORKSPACE_ROOT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
 ask WSROOT "Where do your project folders live?" "${CUR_WS:-$HOME/repos}"
@@ -557,9 +701,58 @@ else
   upsert_env WORKSPACE_ROOT "$WSROOT" "$ENV_FILE"
   ok "Saved your projects folder: $WSROOT"
 fi
+else
+  say "  [skip] projects folder — not needed for: $PRESET_LABEL"
+fi
 
-# ---- STEP 7: verify checklist (AC-TI-013) -----------------------------------
-step_banner 8 "Checking everything works"
+# ---- shared YDO Agentic OS workspace repo -----------------------------------
+# Offered on every preset: clone yourdoctorsonline/your-doctors-online if absent, or
+# git-pull it if already present. Private repo → needs the teammate's GitHub access;
+# fail-open on decline/auth/tooling (warn + manual command, never abort).
+# SETUP_WORKSPACE_REPO=0 (or answering n) skips it non-interactively.
+if [ "${SETUP_WORKSPACE_REPO:-1}" = "1" ]; then
+  step_banner "Shared YDO workspace"
+  WS_DEFAULT="$HOME/your-doctors-online"
+  if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+    say "DRYRUN: would offer to clone/update yourdoctorsonline/your-doctors-online into $WS_DEFAULT"
+  else
+    ask _WSREPO "Set up the shared YDO Agentic OS workspace (yourdoctorsonline/your-doctors-online)? [Y/n]" "Y"
+    case "$_WSREPO" in
+      [Nn]*) say "  [skip] shared workspace — you can clone it later." ;;
+      *)
+        ask WS_DIR "Where should it live?" "$WS_DEFAULT"
+        case "$(ws_repo_state "$WS_DIR")" in
+          pull)
+            say "Updating the workspace at $WS_DIR ..."
+            if git -C "$WS_DIR" pull --ff-only 2>/dev/null; then
+              ok "Workspace updated (fast-forward)."
+            else
+              warn "Couldn't fast-forward the workspace (local changes?). Update it yourself:"
+              say  "  git -C \"$WS_DIR\" pull"
+            fi ;;
+          occupied)
+            warn "$WS_DIR already exists and isn't the workspace repo — leaving it alone."
+            say  "  Pick another folder and re-run, or clone it manually:"
+            say  "  gh repo clone yourdoctorsonline/your-doctors-online" ;;
+          clone)
+            say "Cloning yourdoctorsonline/your-doctors-online into $WS_DIR ..."
+            if have gh && gh repo clone yourdoctorsonline/your-doctors-online "$WS_DIR" 2>/dev/null; then
+              ok "Workspace cloned to $WS_DIR"
+            elif have git && GIT_TERMINAL_PROMPT=0 git clone https://github.com/yourdoctorsonline/your-doctors-online.git "$WS_DIR" 2>/dev/null; then
+              ok "Workspace cloned to $WS_DIR"
+            else
+              warn "Couldn't clone the workspace (it's private — needs your GitHub access)."
+              say  "  Sign in to GitHub, then run:"
+              say  "    gh repo clone yourdoctorsonline/your-doctors-online \"$WS_DIR\""
+              say  "  (or  git clone https://github.com/yourdoctorsonline/your-doctors-online.git \"$WS_DIR\")"
+            fi ;;
+        esac ;;
+    esac
+  fi
+fi
+
+# ---- verify checklist (only what this preset installed) ---------------------
+step_banner "Checking everything works"
 CHECK_FAIL=0
 check() {
   # check "label" 0|1  (1 == ok)
@@ -572,67 +765,80 @@ check() {
 }
 
 if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
-  say "DRYRUN: would run the tmux / login / accounts / tailscale / :7681 / :8090 checks."
+  say "DRYRUN: would run the checks relevant to: $PRESET_LABEL"
 else
-  # tmux
-  have tmux && check "tmux is installed ($(tmux -V 2>/dev/null))" 1 || check "tmux is installed" 0
-  # claude login
-  creds_ok "$HOME/.claude" && check "signed in to Claude" 1 || check "signed in to Claude" 0
-  # extra accounts detected (same skip rules as the portal)
-  ACC_COUNT=0
-  for d in "$HOME"/.claude-*; do
-    [ -d "$d" ] || continue
-    base="$(basename "$d")"; sub="${base#.claude-}"
-    case "$sub" in launcher) continue ;; swap-backup*) continue ;; esac
-    ACC_COUNT=$((ACC_COUNT + 1))
-  done
-  check "extra Claude accounts detected: $ACC_COUNT" 1
-  # tailscale
-  [ -n "$TS_IP" ] && check "Tailscale connected ($TS_IP)" 1 || check "Tailscale connected" 0
-
-  # ttyd :7681 and dashboard :8090 — they bind the tailnet IP, so curl that.
-  HOST="${TS_IP:-127.0.0.1}"
-  port_up() {
-    # port_up PORT — poll up to 30s for an HTTP response on $HOST:PORT
-    local port="$1" i
-    for i in $(seq 1 15); do
-      if curl -s -o /dev/null -m 3 "http://$HOST:$port" 2>/dev/null; then return 0; fi
-      sleep 2
-    done
-    return 1
-  }
-  port_up 7681 && check "terminal service is live (port 7681)" 1 || check "terminal service is live (port 7681)" 0
-  port_up 8090 && check "dashboard service is live (port 8090)" 1 || check "dashboard service is live (port 8090)" 0
-  # dashboard actually serves the default account
-  if curl -s -m 3 "http://$HOST:8090/api/accounts" 2>/dev/null | grep -q '"default"'; then
-    check "dashboard lists your default account" 1
-  else
-    check "dashboard lists your default account" 0
+  if preset_wants "$PRESET" tools; then
+    have tmux && check "tmux is installed ($(tmux -V 2>/dev/null))" 1 || check "tmux is installed" 0
+  fi
+  if preset_wants "$PRESET" signin; then
+    any_creds && check "signed in to Claude" 1 || check "signed in to Claude (finish manually, then re-run)" 0
+  fi
+  if preset_wants "$PRESET" harness; then
+    [ -d "$HOME/.claude/skills/eng-harness" ] \
+      && check "YDO Agentic Harness skill installed" 1 \
+      || check "YDO Agentic Harness skill installed" 0
+    if grep -q "merge-gate.py" "$HOME/.claude/settings.json" 2>/dev/null; then
+      check "harness hooks wired into ~/.claude/settings.json" 1
+    else
+      check "harness hooks wired into ~/.claude/settings.json" 0
+    fi
+  fi
+  if preset_wants "$PRESET" tailscale; then
+    [ -n "$TS_IP" ] && check "Tailscale connected ($TS_IP)" 1 || check "Tailscale connected" 0
+  fi
+  if preset_wants "$PRESET" portal; then
+    # ttyd :7681 and dashboard :8090 bind the tailnet IP, so curl that.
+    HOST="${TS_IP:-127.0.0.1}"
+    port_up() {
+      local port="$1" i
+      for i in $(seq 1 15); do
+        if curl -s -o /dev/null -m 3 "http://$HOST:$port" 2>/dev/null; then return 0; fi
+        sleep 2
+      done
+      return 1
+    }
+    port_up 7681 && check "terminal service is live (port 7681)" 1 || check "terminal service is live (port 7681)" 0
+    port_up 8090 && check "dashboard service is live (port 8090)" 1 || check "dashboard service is live (port 8090)" 0
+    if curl -s -m 3 "http://$HOST:8090/api/accounts" 2>/dev/null | grep -q '"default"'; then
+      check "dashboard lists your default account" 1
+    else
+      check "dashboard lists your default account" 0
+    fi
   fi
 
   if [ "$CHECK_FAIL" != "0" ]; then
     say ""
-    fail_msg "$CHECK_FAIL check(s) didn't pass."
+    warn "$CHECK_FAIL check(s) didn't pass (the install still finished)."
     say "Common fixes:"
-    say "  - Give it a minute and re-run me — the services can take a moment to boot."
+    say "  - Give it a minute and re-run me — services can take a moment to boot."
     say "  - Make sure Tailscale is connected (open the app)."
-    say "  - On macOS, you may need to allow the background services when prompted."
-    exit 1
+    say "  - On macOS, allow the background services when prompted."
+    say "  - If sign-in didn't take, run  claude  yourself, sign in, then re-run me."
   fi
 fi
 
-# ---- STEP 8: handoff (URL + QR) ---------------------------------------------
-say ""; say "${C_BOLD}You're set — open it on your phone${C_RESET}"
-URL="http://${TS_IP:-127.0.0.1}:8090"
+# ---- handoff (tailored to the preset) ---------------------------------------
 say ""
-say "${C_BOLD}${C_GREEN}  $URL${C_RESET}"
-say ""
-if have qrencode; then
-  qrencode -t ANSIUTF8 "$URL" 2>/dev/null || true
+if preset_wants "$PRESET" portal; then
+  say "${C_BOLD}Portal ready — open it on your phone${C_RESET}"
+  URL="http://${TS_IP:-127.0.0.1}:8090"
+  say ""
+  say "${C_BOLD}${C_GREEN}  $URL${C_RESET}"
+  say ""
+  if have qrencode; then
+    qrencode -t ANSIUTF8 "$URL" 2>/dev/null || true
+    say ""
+  fi
+  say "On your phone: open this link, then Share > Add to Home Screen."
+  say "(Make sure the Tailscale app on your phone is signed in and connected.)"
   say ""
 fi
-say "On your phone: open this link, then Share > Add to Home Screen."
-say "(Make sure the Tailscale app on your phone is signed in and connected.)"
-say ""
+if preset_wants "$PRESET" harness; then
+  say "${C_BOLD}YDO Agentic Harness is installed.${C_RESET}"
+  say "It's active in every project you open with Claude Code — build work routes"
+  say "through spec -> plan -> build -> verify -> ship, and the merge-gate + compaction"
+  say "hooks are wired into ~/.claude/settings.json."
+  say ""
+fi
 ok "Setup complete."
 exit 0
