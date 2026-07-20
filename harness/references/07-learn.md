@@ -51,6 +51,7 @@ future CI use.
 
 - `run.md` frontmatter/status → `complete`, date, final commit sha.
 - `bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> learn PASS "closed"`
+- Clear the merge gate: `rm -f .eng-harness/ACTIVE_RUN` (set by scaffold; while present, merge commands are blocked unless `ledger.sh check` passes).
 - The run dir stays committed — it is the team's evidence that the work was done
   right, and the raw material for tuning the harness.
 

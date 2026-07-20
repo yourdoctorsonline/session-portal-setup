@@ -99,5 +99,7 @@ status: pending
 |------|----------------------------------|---------|-------|
 EOF
 
+printf '%s' "$(basename "$RUN_DIR")" > .eng-harness/ACTIVE_RUN
+
 echo "created $RUN_DIR (lane $LANE)"
 echo "  run.md spec.md plan.md audit.md tasks/"

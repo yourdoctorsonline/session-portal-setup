@@ -142,6 +142,72 @@ tsip() {
   "$ts" ip -4 2>/dev/null | head -1
 }
 
+# wire_global_hooks SETTINGS_FILE HOOKS_DIR
+# Idempotently merge the two enforcement hooks into a global Claude settings.json:
+# merge-gate on PreToolUse[Bash] and precompact-run-snapshot on PreCompact. Uses a
+# python3 stdlib-json merge — preserves every existing key/hook, and adds each entry
+# only if its script basename isn't already wired (so re-running is safe). Writes
+# atomically (temp + os.replace) so a crash can't corrupt the file.
+# rc: 0 = wired or already-present · 3 = python3 missing OR settings.json isn't valid
+# JSON · other nonzero = write error. Callers treat any nonzero as "warn + wire by hand".
+wire_global_hooks() {
+  local settings="$1" hooks_dir="$2"
+  have python3 || return 3
+  python3 - "$settings" "$hooks_dir" <<'PY'
+import json, os, sys
+settings, hooks_dir = sys.argv[1], sys.argv[2]
+data = {}
+if os.path.exists(settings) and os.path.getsize(settings) > 0:
+    try:
+        with open(settings) as f:
+            data = json.load(f)
+    except Exception:
+        print("INVALID_JSON", file=sys.stderr); sys.exit(3)
+if not isinstance(data, dict):
+    print("INVALID_JSON", file=sys.stderr); sys.exit(3)
+hooks = data.get("hooks")
+if not isinstance(hooks, dict):
+    hooks = {}; data["hooks"] = hooks
+
+def has_cmd(section, needle):
+    for g in (hooks.get(section) or []):
+        if not isinstance(g, dict):
+            continue
+        for h in (g.get("hooks") or []):
+            if isinstance(h, dict) and needle in (h.get("command") or ""):
+                return True
+    return False
+
+def section_list(name):
+    v = hooks.get(name)
+    if not isinstance(v, list):
+        v = []; hooks[name] = v
+    return v
+
+changed = False
+mg = 'python3 "%s"' % os.path.join(hooks_dir, "merge-gate.py")
+pc = 'python3 "%s"' % os.path.join(hooks_dir, "precompact-run-snapshot.py")
+if not has_cmd("PreToolUse", "merge-gate.py"):
+    section_list("PreToolUse").append(
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": mg}]})
+    changed = True
+if not has_cmd("PreCompact", "precompact-run-snapshot.py"):
+    section_list("PreCompact").append(
+        {"hooks": [{"type": "command", "command": pc}]})
+    changed = True
+
+if changed:
+    os.makedirs(os.path.dirname(settings) or ".", exist_ok=True)
+    tmp = "%s.tmp.%d" % (settings, os.getpid())
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2); f.write("\n")
+    os.replace(tmp, settings)
+    print("WIRED")
+else:
+    print("NOOP")
+PY
+}
+
 # --- sourcing guard: the test harness stops here -----------------------------
 if [ "${SETUP_LIB_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
@@ -413,6 +479,33 @@ if [ -d "$SRC/harness" ]; then
       ok "Engineering harness skill installed (with learning tripwire)"
     else
       warn "Couldn't install the engineering harness skill — portal still works."
+    fi
+  fi
+fi
+
+# Enforcement hooks (merge-gate + compaction snapshot) — dropped into the user-level
+# hooks dir and wired into the global ~/.claude/settings.json so the harness gates
+# fire in every project this teammate opens. Fail-open: if we can't copy or wire them,
+# the portal + skill still land and we print the two lines to add by hand.
+if [ -d "$SRC/harness/hooks" ]; then
+  USER_HOOKS="$HOME/.claude/hooks"
+  SETTINGS="$HOME/.claude/settings.json"
+  if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+    say "DRYRUN: would install enforcement hooks to $USER_HOOKS and wire them into $SETTINGS"
+  else
+    mkdir -p "$USER_HOOKS"
+    if cp "$SRC"/harness/hooks/*.py "$USER_HOOKS"/ 2>/dev/null; then
+      chmod +x "$USER_HOOKS"/*.py 2>/dev/null || true
+      if wire_global_hooks "$SETTINGS" "$USER_HOOKS" >/dev/null 2>&1; then
+        ok "Enforcement hooks wired (merge gate + compaction snapshot)"
+      else
+        warn "Couldn't auto-wire the enforcement hooks into $SETTINGS."
+        say  "  Add these two hooks yourself in Claude Code, or re-run me:"
+        say  "    PreToolUse (matcher Bash):  python3 \"$USER_HOOKS/merge-gate.py\""
+        say  "    PreCompact:                 python3 \"$USER_HOOKS/precompact-run-snapshot.py\""
+      fi
+    else
+      warn "Couldn't copy the enforcement hooks — portal + skill still work."
     fi
   fi
 fi

@@ -44,3 +44,11 @@ after merge. Version cuts go through `ops-release`.
 Record: `bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> ship PASS "merged <sha>"`
 
 NEXT: `references/07-learn.md`
+
+## Chat paste contract (token discipline)
+
+When reporting ship results to the user, paste ONLY: (1) the one-line AC summary
+(N met / M total), (2) residual risks or skips, (3) EXTERNAL-STATE items awaiting
+human confirmation. Never the full AC table, full diffs, or full logs — those
+live in the run dir; link the path instead. (ECC PreCompact/summary-contract
+pattern, adopted 2026-07-20.)
