@@ -234,6 +234,75 @@ tsip() {
   "$ts" ip -4 2>/dev/null | head -1
 }
 
+# tsd_bin -> echoes a usable tailscaled DAEMON path, or nothing (rc 1). CLI-only Tailscale:
+# the Homebrew *formula* ships `tailscaled` next to `tailscale` (/opt/homebrew, /usr/local, PATH).
+# Deliberately does NOT look inside /Applications/Tailscale.app — that's the GUI flavor we don't
+# use. Overridable for tests via SETUP_FAKE_TAILSCALED.
+tsd_bin() {
+  local c
+  for c in \
+    "${SETUP_FAKE_TAILSCALED:-/opt/homebrew/bin/tailscaled}" \
+    /usr/local/bin/tailscaled /usr/bin/tailscaled \
+    "$(command -v tailscaled 2>/dev/null)"; do
+    [ -n "$c" ] && [ -x "$c" ] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
+# claude_signin [CONFIG_DIR] — run the interactive Claude sign-in with a REAL pseudo-terminal.
+# The Bun-compiled `claude` CLI dereferences process.stdout.isTTY and crashes
+# (`TypeError: undefined is not an object`) when stdout isn't a TTY in the installer's launch
+# context (curl|bash / .command double-click). `script(1)` allocates a PTY so isTTY is defined.
+# macOS/BSD `script` takes the command as argv (`script -q /dev/null cmd args`); util-linux
+# `script` needs `-c "cmd"`. Falls back to a bare launch if `script` is absent. Always returns 0
+# — sign-in success is judged separately by any_creds/creds_ok. Uses /dev/tty for user I/O.
+claude_signin() {
+  local cfg="${1:-}" tty="${SETUP_TTY:-/dev/tty}"
+  if have script; then
+    case "${SETUP_FAKE_UNAME:-$(uname -s)}" in
+      Darwin)
+        if [ -n "$cfg" ]; then
+          script -q /dev/null env CLAUDE_CONFIG_DIR="$cfg" claude <"$tty" >"$tty" 2>&1 || true
+        else
+          script -q /dev/null claude <"$tty" >"$tty" 2>&1 || true
+        fi ;;
+      *)
+        if [ -n "$cfg" ]; then
+          script -qec "CLAUDE_CONFIG_DIR='$cfg' claude" /dev/null <"$tty" >"$tty" 2>&1 || true
+        else
+          script -qec "claude" /dev/null <"$tty" >"$tty" 2>&1 || true
+        fi ;;
+    esac
+  else
+    if [ -n "$cfg" ]; then
+      env CLAUDE_CONFIG_DIR="$cfg" claude <"$tty" >"$tty" 2>&1 || true
+    else
+      claude <"$tty" >"$tty" 2>&1 || true
+    fi
+  fi
+  return 0
+}
+
+# rustdesk_phone_guide [TAILNET_IP] — print how to reach THIS Mac from the RustDesk phone app.
+# With a tailnet IP, steer the user to connect over Tailscale (private network) using that IP;
+# otherwise fall back to the RustDesk relay ID. Pure output, no side effects (so tests can
+# assert the text and the IP-vs-ID branch).
+rustdesk_phone_guide() {
+  local ip="${1:-}"
+  say ""
+  say "  ${C_BOLD}Remote in from your phone:${C_RESET}"
+  say "    1. On this Mac, open RustDesk: it shows an ID, and lets you set a permanent"
+  say "       password (Settings > Security > unattended access). Note the ID; set a password."
+  say "    2. Install the RustDesk app on your phone (App Store / Google Play)."
+  if [ -n "$ip" ]; then
+    say "    3. Best over your private network: in the phone app's address box, enter this"
+    say "       Mac's Tailscale IP  ${C_BOLD}${ip}${C_RESET}  (keep the Tailscale app connected"
+    say "       on your phone), then the password. Or use the RustDesk ID from anywhere."
+  else
+    say "    3. In the phone app, enter this Mac's RustDesk ID, then the password."
+  fi
+}
+
 # wire_global_hooks SETTINGS_FILE HOOKS_DIR
 # Idempotently merge the two enforcement hooks into a global Claude settings.json:
 # merge-gate on PreToolUse[Bash] and precompact-run-snapshot on PreCompact. Uses a
@@ -445,8 +514,11 @@ if [ "$PLATFORM" = "mac" ]; then
     _KA=$!
     say "Installing Homebrew (the tool that installs other tools)..."
     for _a in 1 2 3; do
+      # </dev/null: under `curl … | bash` fd0 is the pipe carrying THIS script. If the
+      # Homebrew installer reads stdin it drains the rest of the script and bash then
+      # exits silently at EOF (the "stops right after the tools step" bug). Detach it.
       env NONINTERACTIVE=1 /bin/bash -c \
-        "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" 2>&1 | sed 's/^/    /'
+        "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null 2>&1 | sed 's/^/    /'
       BREW="$(brew_bin)"; [ -n "$BREW" ] && break
       warn "Homebrew attempt $_a didn't land — retrying..."
       sleep 3
@@ -472,11 +544,11 @@ if [ "$PLATFORM" = "mac" ]; then
       # off-PATH or transient formula failure doesn't leave the tool missing. Never skip.
       _ok=0
       for _a in 1 2 3; do
-        "$BREW" install "$tool" 2>&1 | sed 's/^/    /'
+        "$BREW" install "$tool" </dev/null 2>&1 | sed 's/^/    /'
         eval "$("$BREW" shellenv)" 2>/dev/null || true
         { have "$tool" || [ -x "$(dirname "$BREW")/$tool" ]; } && { _ok=1; break; }
         warn "$tool attempt $_a didn't land — refreshing and retrying..."
-        "$BREW" update >/dev/null 2>&1 || true
+        "$BREW" update </dev/null >/dev/null 2>&1 || true
         sleep 2
       done
       [ "$_ok" = 1 ] && ok "$tool installed." \
@@ -491,8 +563,15 @@ elif [ "$PLATFORM" = "wsl" ]; then
     have "$tool" || MISSING="$MISSING $tool"
   done
   if [ -n "$MISSING" ]; then
-    run "updating package lists" sudo apt-get update -qq
-    run "installing$MISSING" sudo apt-get install -y $MISSING
+    if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+      say "DRYRUN: would apt-get update && apt-get install -y$MISSING"
+    else
+      # </dev/null so apt can't drain the piped script (see the Homebrew note above).
+      say "  updating package lists"
+      sudo apt-get update -qq </dev/null || true
+      say "  installing$MISSING"
+      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $MISSING </dev/null
+    fi
   else
     ok "tmux, ttyd, python3, qrencode already installed."
   fi
@@ -519,7 +598,8 @@ if preset_wants "$PRESET" signin; then
     say "DRYRUN: would install Claude Code."
   else
     say "Installing Claude Code..."
-    run "installing Claude Code" /bin/bash -c "curl -fsSL https://claude.ai/install.sh | bash"
+    # </dev/null so the installer can't drain the piped script (see the Homebrew note).
+    /bin/bash -c "curl -fsSL https://claude.ai/install.sh | bash" </dev/null 2>&1 | sed 's/^/    /'
     case ":$PATH:" in
       *":$HOME/.local/bin:"*) : ;;
       *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
@@ -552,7 +632,7 @@ if preset_wants "$PRESET" signin; then
     say "Claude will open now. Sign in, then type  /exit  to come back here."
     say "(Press Enter when you're ready.)"
     read -r _ < /dev/tty 2>/dev/null || true
-    claude < /dev/tty > /dev/tty 2>&1 || true
+    claude_signin
     if any_creds; then
       ok "Signed in to Claude."
     else
@@ -586,7 +666,7 @@ while : ; do
     continue
   fi
   say "Claude will open for '$ACC_NAME'. Sign in with THAT account, then type /exit."
-  CLAUDE_CONFIG_DIR="$ACC_DIR" claude < /dev/tty > /dev/tty 2>&1 || true
+  claude_signin "$ACC_DIR"
   if creds_ok "$ACC_DIR"; then
     ok "'$ACC_NAME' signed in."
   else
@@ -602,27 +682,40 @@ TS_IP=""
 if preset_wants "$PRESET" tailscale; then
 step_banner "Setting up Tailscale (your private network)"
 if [ "$PLATFORM" = "mac" ]; then
-  # Prefer the menu-bar app (easiest sign-in). Install it only if neither the app nor a
-  # command-line tailscale already exists.
-  if [ ! -e "/Applications/Tailscale.app" ] && ! have tailscale && [ -z "$(ts_bin)" ]; then
+  # CLI-only Tailscale: the Homebrew *formula* (a background `tailscaled` daemon + the
+  # `tailscale` CLI), NOT the `--cask` menu-bar app. Login is a printed auth URL, so there's
+  # nothing to click in a menu bar and no GUI app to install.
+  if [ -z "$(ts_bin)" ]; then
     BREW="$(brew_bin)"
-    if [ -n "$BREW" ]; then
-      run "installing Tailscale (menu-bar app)" "$BREW" install --cask tailscale
+    if [ -n "$BREW" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+      _ok=0
+      for _a in 1 2 3; do
+        # </dev/null so brew can't drain the piped script (see the Homebrew note in Step 2).
+        "$BREW" install tailscale </dev/null 2>&1 | sed 's/^/    /'
+        eval "$("$BREW" shellenv)" 2>/dev/null || true
+        [ -n "$(ts_bin)" ] && { _ok=1; break; }
+        warn "Tailscale attempt $_a didn't land — refreshing and retrying..."
+        "$BREW" update </dev/null >/dev/null 2>&1 || true
+        sleep 2
+      done
+      [ "$_ok" = 1 ] && ok "Tailscale (CLI) installed." \
+        || warn "Couldn't install the Tailscale CLI after 3 tries. Run  \"$BREW\" install tailscale  yourself, then re-run me."
+    elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+      say "DRYRUN: would install the Tailscale CLI (brew install tailscale)"
     else
-      warn "Can't install Tailscale without Homebrew — get it from https://tailscale.com/download, then re-run me."
+      warn "Can't install Tailscale without Homebrew — see the note above, then re-run me."
     fi
-  fi
-  if [ -e "/Applications/Tailscale.app" ]; then
-    run "opening Tailscale" open -a Tailscale
-    ok "Tailscale app opened — its icon is in the top-right menu bar."
-  elif [ -n "$(ts_bin)" ]; then
-    ok "Tailscale (command-line) is installed."
   else
-    warn "Couldn't install Tailscale automatically — get it from https://tailscale.com/download, then re-run me."
+    ok "Tailscale (CLI) already installed."
   fi
 elif [ "$PLATFORM" = "wsl" ]; then
   if ! have tailscale; then
-    run "installing Tailscale" /bin/bash -c "curl -fsSL https://tailscale.com/install.sh | sh"
+    if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+      say "DRYRUN: would install Tailscale (curl https://tailscale.com/install.sh | sh)"
+    else
+      # </dev/null so the installer can't drain the piped script (see the Homebrew note).
+      /bin/bash -c "curl -fsSL https://tailscale.com/install.sh | sh" </dev/null 2>&1 | sed 's/^/    /'
+    fi
   else
     ok "Tailscale already installed."
   fi
@@ -641,29 +734,35 @@ WSLCONF
     say "  3. Run this same install command again — it'll pick up where it left off."
     exit 0
   fi
-  run "starting Tailscale" sudo systemctl enable --now tailscaled
+  if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+    say "DRYRUN: would enable the tailscaled service (systemctl enable --now)"
+  else
+    say "  starting Tailscale"
+    sudo systemctl enable --now tailscaled </dev/null 2>&1 | sed 's/^/    /' || true
+  fi
 fi
 
 # Sign in / bring the connection up if we don't have an address yet.
 if [ -z "$(tsip)" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
   TS_BIN="$(ts_bin)"
-  if [ "$PLATFORM" = "mac" ] && [ -e "/Applications/Tailscale.app" ]; then
-    # GUI app: sign-in is a menu-bar click. Nudge the browser login too (best-effort).
-    [ -n "$TS_BIN" ] && "$TS_BIN" up >/dev/null 2>&1 &
+  if [ "$PLATFORM" = "mac" ] && [ -n "$TS_BIN" ]; then
+    # CLI: register + start the background system daemon (idempotent — skip if it's already
+    # running), then sign in via the printed auth URL. No menu bar, no GUI.
+    if ! "$TS_BIN" status >/dev/null 2>&1; then
+      TSD="$(tsd_bin)"
+      if [ -n "$TSD" ]; then
+        # Not via run(): a trailing >/dev/null on a run() call also nulls run()'s own
+        # status line. Print it ourselves, then null only the daemon command's output.
+        say "  starting the Tailscale background service"
+        sudo "$TSD" install-system-daemon </dev/null >/dev/null 2>&1 || true
+      fi
+    fi
     say ""
-    say "  ${C_BOLD}Sign in to Tailscale on your Mac:${C_RESET}"
-    say "    1. Click the Tailscale icon in the top-right menu bar (near the clock)."
-    say "    2. Choose 'Log in...' and sign in with the SAME account as your phone."
-    say "  A browser tab may open on its own — if it does, just sign in there."
-  elif [ "$PLATFORM" = "mac" ] && [ -n "$TS_BIN" ]; then
-    # Command-line variant: make sure the background service runs, then sign in.
-    "$TS_BIN" status >/dev/null 2>&1 \
-      || run "starting the Tailscale service" sudo "${TS_BIN%/*}/tailscaled" install-system-daemon 2>/dev/null || true
-    say ""
-    say "  Signing in to Tailscale — open the link it prints below and sign in:"
-    sudo "$TS_BIN" up 2>&1 | sed 's/^/    /' || true
+    say "  ${C_BOLD}Sign in to Tailscale:${C_RESET} open the link it prints below in your browser"
+    say "  and sign in with the SAME account as your phone."
+    sudo "$TS_BIN" up </dev/null 2>&1 | sed 's/^/    /' || true
   elif [ "$PLATFORM" = "wsl" ]; then
-    run "connecting to Tailscale" sudo tailscale up
+    sudo tailscale up </dev/null 2>&1 | sed 's/^/    /' || true
   fi
 fi
 
@@ -680,20 +779,20 @@ if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
   say "DRYRUN: would wait for a Tailscale IP here."
   TS_IP="100.64.0.1"   # placeholder so later steps have something to print
 else
-  say "Waiting for Tailscale to connect (sign in on the Mac if you haven't yet)..."
+  say "Waiting for Tailscale to connect (finish the browser sign-in if you haven't yet)..."
   TS_IP=""
   for i in $(seq 1 90); do
     TS_IP="$(tsip)"
     [ -n "$TS_IP" ] && break
     if [ "$i" = "30" ]; then
-      say "  ...still waiting. If you haven't: click the Tailscale menu-bar icon and choose 'Log in...'."
+      say "  ...still waiting. If you haven't: open the sign-in link printed above and log in."
     fi
     sleep 2
   done
   if [ -z "$TS_IP" ]; then
     warn "Tailscale isn't connected yet."
-    say "  Finish signing in on the Mac (Tailscale menu-bar icon -> Log in, same account as"
-    say "  your phone), then re-run me — it's safe to re-run and picks up right here."
+    say "  Open the sign-in link printed above and log in (same account as your phone),"
+    say "  then re-run me — it's safe to re-run and picks up right here."
     exit 1
   fi
   ok "Tailscale connected — your address is $TS_IP"
@@ -837,7 +936,7 @@ if [ "${SETUP_WORKSPACE_REPO:-1}" = "1" ]; then
         case "$(ws_repo_state "$WS_DIR")" in
           pull)
             say "Updating the workspace at $WS_DIR ..."
-            if git -C "$WS_DIR" pull --ff-only 2>/dev/null; then
+            if git -C "$WS_DIR" pull --ff-only </dev/null 2>/dev/null; then
               ok "Workspace updated (fast-forward)."
             else
               warn "Couldn't fast-forward the workspace (local changes?). Update it yourself:"
@@ -849,9 +948,9 @@ if [ "${SETUP_WORKSPACE_REPO:-1}" = "1" ]; then
             say  "  gh repo clone yourdoctorsonline/your-doctors-online" ;;
           clone)
             say "Cloning yourdoctorsonline/your-doctors-online into $WS_DIR ..."
-            if have gh && gh repo clone yourdoctorsonline/your-doctors-online "$WS_DIR" 2>/dev/null; then
+            if have gh && gh repo clone yourdoctorsonline/your-doctors-online "$WS_DIR" </dev/null 2>/dev/null; then
               ok "Workspace cloned to $WS_DIR"
-            elif have git && GIT_TERMINAL_PROMPT=0 git clone https://github.com/yourdoctorsonline/your-doctors-online.git "$WS_DIR" 2>/dev/null; then
+            elif have git && GIT_TERMINAL_PROMPT=0 git clone https://github.com/yourdoctorsonline/your-doctors-online.git "$WS_DIR" </dev/null 2>/dev/null; then
               ok "Workspace cloned to $WS_DIR"
             else
               warn "Couldn't clone the workspace (it's private — needs your GitHub access)."
@@ -871,18 +970,25 @@ if [ "${SETUP_RUSTDESK:-}" != "0" ] && [ "$PLATFORM" = "mac" ]; then
   step_banner "Remote management (optional)"
   if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
     say "DRYRUN: would offer RustDesk (remote desktop). SETUP_RUSTDESK=0 skips, =1 auto-installs."
+    say "DRYRUN: after install, would guide phone connect (prefer Tailscale IP ${TS_IP:-<tailnet>})."
   elif [ -e "/Applications/RustDesk.app" ]; then
+    # Already installed: re-print the phone-connect guidance, but do NOT auto-launch the
+    # GUI on every re-run (the installer is meant to be re-run freely).
     ok "RustDesk already installed."
+    rustdesk_phone_guide "${TS_IP:-}"
   else
     _RD="${SETUP_RUSTDESK:-}"
-    [ -z "$_RD" ] && ask _RD "Install RustDesk so you can remote in to this Mac from elsewhere? [y/N]" "N"
+    [ -z "$_RD" ] && ask _RD "Install RustDesk so you can remote in to this Mac from your phone? [y/N]" "N"
     case "$_RD" in
       1|[Yy]*)
         BREW="$(brew_bin)"
         if [ -n "$BREW" ]; then
-          "$BREW" install --cask rustdesk 2>&1 | sed 's/^/    /'
+          # </dev/null so the cask install can't drain the piped script (see the Homebrew note).
+          "$BREW" install --cask rustdesk </dev/null 2>&1 | sed 's/^/    /'
           if [ -e "/Applications/RustDesk.app" ]; then
-            ok "RustDesk installed — open it to set your remote access ID + password."
+            ok "RustDesk installed."
+            run "opening RustDesk" open -a RustDesk
+            rustdesk_phone_guide "${TS_IP:-}"
           else
             warn "Couldn't install RustDesk — get it from https://rustdesk.com/download, then re-run me."
           fi

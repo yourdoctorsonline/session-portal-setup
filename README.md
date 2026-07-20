@@ -7,7 +7,7 @@ Session Launcher is a web page that runs on your own computer and lets you start
 On a Mac, open Terminal and run:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)"
 ```
 
 The setup asks you a few questions and handles the rest.

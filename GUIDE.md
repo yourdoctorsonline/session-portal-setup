@@ -30,7 +30,7 @@ Mac users can skip all of this.
 Open your Terminal (on a Mac) or the Ubuntu window (on Windows), paste this in, and press Enter:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)"
 ```
 
 That's it. From here the setup asks you questions and does the work. Here's what each step does so nothing catches you off guard.
@@ -45,7 +45,7 @@ That's it. From here the setup asks you questions and does the work. Here's what
 
 **4. Add another Claude account?** It asks if you want to add a second Claude login. This is optional. If you do, it signs that one in too, and asks again until you say no. Every account you add shows up in the portal automatically, so you can switch between them from your phone.
 
-**5. Sign in to Tailscale.** Tailscale is the private network that connects your phone to your computer. It installs Tailscale and opens the sign-in. **Sign in with the same account on your computer and on your phone.** This is the single most important step. If your computer and phone are on two different Tailscale accounts, they can't see each other and nothing works.
+**5. Sign in to Tailscale.** Tailscale is the private network that connects your phone to your computer. On your computer it installs the lightweight command-line version (no app to manage — it just runs in the background) and prints a sign-in link. Open that link in your browser and log in. On your **phone**, install the Tailscale app from the App Store / Google Play. **Sign in with the same account on your computer and on your phone.** This is the single most important step. If your computer and phone are on two different Tailscale accounts, they can't see each other and nothing works.
 
 **6. Install the portal.** It sets up the portal and makes it start on its own whenever your computer boots. If it ever crashes, it restarts itself. You don't have to babysit it.
 
@@ -64,7 +64,7 @@ Now the portal has its own icon on your phone, like an app.
 ## If something isn't working
 
 - **The portal won't load.** Check that your computer is on and awake. If it went to sleep, the portal is off. Wake it and try again.
-- **Your phone can't find the portal.** This is the most common problem, and it's almost always the same cause: your phone and your computer are signed in to Tailscale with two different accounts. Open the Tailscale app on both and make sure the account matches exactly.
+- **Your phone can't find the portal.** This is the most common problem, and it's almost always the same cause: your phone and your computer are signed in to Tailscale with two different accounts. On your phone, open the Tailscale app; on your computer, run `tailscale status` in Terminal. Make sure the account matches exactly.
 - **Something got half set up.** Running the one command again is always safe. It skips anything that's already done and picks up where it left off.
 
 ## One safety note
