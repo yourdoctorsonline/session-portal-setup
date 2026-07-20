@@ -249,6 +249,22 @@ tsd_bin() {
   return 1
 }
 
+# ts_cli_bin -> echoes the real `tailscale` CLI client, or nothing (rc 1). Like ts_bin BUT
+# deliberately skips /Applications/Tailscale.app — this is the resolver used to decide whether
+# the CLI *formula* is installed, so that a machine left with the GUI app by an older installer
+# still gets the formula (and is driven by it), not steered back onto the app. Overridable for
+# tests via SETUP_FAKE_TSCLI.
+ts_cli_bin() {
+  local c
+  for c in \
+    "${SETUP_FAKE_TSCLI:-/opt/homebrew/bin/tailscale}" \
+    /usr/local/bin/tailscale /usr/bin/tailscale \
+    "$(command -v tailscale 2>/dev/null)"; do
+    [ -n "$c" ] && [ -x "$c" ] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
 # claude_signin [CONFIG_DIR] — run the interactive Claude sign-in with a REAL pseudo-terminal.
 # The Bun-compiled `claude` CLI dereferences process.stdout.isTTY and crashes
 # (`TypeError: undefined is not an object`) when stdout isn't a TTY in the installer's launch
@@ -685,7 +701,17 @@ if [ "$PLATFORM" = "mac" ]; then
   # CLI-only Tailscale: the Homebrew *formula* (a background `tailscaled` daemon + the
   # `tailscale` CLI), NOT the `--cask` menu-bar app. Login is a printed auth URL, so there's
   # nothing to click in a menu bar and no GUI app to install.
-  if [ -z "$(ts_bin)" ]; then
+  # Migration: a machine left with the GUI app by an OLDER installer must still get the CLI —
+  # so the presence check keys off the FORMULA CLI (ts_cli_bin), which never counts the app
+  # bundle. If the app is present we surface it once (it's redundant now; user can remove it).
+  if [ -e "/Applications/Tailscale.app" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+    warn "You have the Tailscale menu-bar app installed (from an earlier setup)."
+    say  "  This installer now uses the lightweight command-line Tailscale instead. To avoid"
+    say  "  two copies fighting over the connection, I'll quit the app; you can delete it later"
+    say  "  from Applications if you like."
+    osascript -e 'quit app "Tailscale"' >/dev/null 2>&1 || true
+  fi
+  if [ -z "$(ts_cli_bin)" ]; then
     BREW="$(brew_bin)"
     if [ -n "$BREW" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
       _ok=0
@@ -693,7 +719,7 @@ if [ "$PLATFORM" = "mac" ]; then
         # </dev/null so brew can't drain the piped script (see the Homebrew note in Step 2).
         "$BREW" install tailscale </dev/null 2>&1 | sed 's/^/    /'
         eval "$("$BREW" shellenv)" 2>/dev/null || true
-        [ -n "$(ts_bin)" ] && { _ok=1; break; }
+        [ -n "$(ts_cli_bin)" ] && { _ok=1; break; }
         warn "Tailscale attempt $_a didn't land — refreshing and retrying..."
         "$BREW" update </dev/null >/dev/null 2>&1 || true
         sleep 2
@@ -708,6 +734,9 @@ if [ "$PLATFORM" = "mac" ]; then
   else
     ok "Tailscale (CLI) already installed."
   fi
+  # From here on, drive Tailscale through the FORMULA CLI (never the app bundle), so the
+  # daemon we start and the client we bring up are the same CLI flavor.
+  TS_BIN="$(ts_cli_bin)"
 elif [ "$PLATFORM" = "wsl" ]; then
   if ! have tailscale; then
     if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
@@ -744,7 +773,8 @@ fi
 
 # Sign in / bring the connection up if we don't have an address yet.
 if [ -z "$(tsip)" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
-  TS_BIN="$(ts_bin)"
+  # Prefer the formula CLI (set just above on mac); fall back to whatever ts_bin resolves.
+  TS_BIN="${TS_BIN:-}"; [ -n "$TS_BIN" ] || TS_BIN="$(ts_bin)"
   if [ "$PLATFORM" = "mac" ] && [ -n "$TS_BIN" ]; then
     # CLI: register + start the background system daemon (idempotent — skip if it's already
     # running), then sign in via the printed auth URL. No menu bar, no GUI.
