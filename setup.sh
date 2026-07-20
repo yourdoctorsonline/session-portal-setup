@@ -436,8 +436,13 @@ if [ "$PLATFORM" = "mac" ]; then
       fi
       ok "Command Line Tools installed."
     fi
-    # Install Homebrew NON-interactively (no RETURN-keypress hang) with up to 3 tries to
-    # ride out a transient/network failure. Re-resolve after each attempt.
+    # Homebrew runs as YOU, never as root (it refuses root and aborts). The sudo it needs
+    # is for its one-time folder setup DURING the install — so prime your password once now
+    # and keep it fresh, then run the installer NON-interactively (no RETURN-keypress hang).
+    say "Homebrew needs your Mac login password once to set itself up..."
+    sudo -v 2>/dev/null || true
+    ( while sudo -n true 2>/dev/null; do sleep 50; kill -0 "$$" 2>/dev/null || break; done ) &
+    _KA=$!
     say "Installing Homebrew (the tool that installs other tools)..."
     for _a in 1 2 3; do
       env NONINTERACTIVE=1 /bin/bash -c \
@@ -446,6 +451,7 @@ if [ "$PLATFORM" = "mac" ]; then
       warn "Homebrew attempt $_a didn't land — retrying..."
       sleep 3
     done
+    kill "$_KA" 2>/dev/null || true
   fi
   if [ -n "$BREW" ]; then
     if [ "${SETUP_DRYRUN:-0}" != "1" ]; then
