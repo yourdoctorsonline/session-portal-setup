@@ -10,28 +10,26 @@ This guide walks you through the whole thing. You don't need to know how to code
 - **A Claude account with Claude Code.** You need a Pro or Max plan. You can add more than one account later if you have them.
 - **Your phone.** This is where you'll open the portal once it's running.
 
-## If you're on Windows: do this first
-
-Windows can't run Session Launcher on its own. It needs WSL2, which is a Linux environment that lives inside Windows. Setting it up takes a few minutes.
-
-1. Click the Start menu, type `PowerShell`, right-click it, and choose **Run as administrator**.
-2. Type this and press Enter:
-   ```
-   wsl --install
-   ```
-3. Restart your computer when it asks you to.
-4. After the restart, open the **Ubuntu** app from the Start menu. It finishes setting itself up and asks you to pick a username and password. Write these down.
-5. You're now in a Linux window. Run the one command below from there.
-
-Mac users can skip all of this.
-
 ## The one command
 
-Open your Terminal (on a Mac) or the Ubuntu window (on Windows), paste this in, and press Enter:
+### On a Mac
+
+Open **Terminal**, paste this in, and press Enter:
 
 ```
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh)"
 ```
+
+### On Windows
+
+Session Launcher runs inside WSL2 (a Linux environment built into Windows), but you don't have to set that up by hand. Open **PowerShell** (click Start, type `PowerShell`, press Enter), paste this in, and press Enter:
+
+```
+irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex
+```
+
+- If WSL isn't set up yet, it tells you exactly what to do: open **Terminal (Admin)**, run `wsl --install`, reboot, then paste the command again. (That one-time step needs admin rights and a restart.)
+- Once WSL is ready, it launches the installer inside Ubuntu for you automatically.
 
 That's it. From here the setup asks you questions and does the work. Here's what each step does so nothing catches you off guard.
 
