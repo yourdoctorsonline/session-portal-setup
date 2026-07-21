@@ -776,23 +776,28 @@ if [ -z "$(tsip)" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
   # Prefer the formula CLI (set just above on mac); fall back to whatever ts_bin resolves.
   TS_BIN="${TS_BIN:-}"; [ -n "$TS_BIN" ] || TS_BIN="$(ts_bin)"
   if [ "$PLATFORM" = "mac" ] && [ -n "$TS_BIN" ]; then
-    # CLI: register + start the background system daemon (idempotent — skip if it's already
-    # running), then sign in via the printed auth URL. No menu bar, no GUI.
+    # CLI sign-in. The #1 way this stalls: `sudo` asks for the Mac password FIRST, invisibly,
+    # and the user waits for a "link" that can't appear until the password is entered. So:
+    #  (1) spell out the password step, (2) prime sudo at that clear moment, (3) run `up`
+    #  DIRECTLY on the terminal — never piped — so both the password prompt AND the auth URL
+    #  are immediately visible (a pipe can hide/delay the URL while `up` blocks on auth).
+    say ""
+    say "  ${C_BOLD}Sign in to Tailscale.${C_RESET}"
+    say "  ${C_YELLOW}First, macOS asks for your Mac password${C_RESET} (the one that unlocks this"
+    say "  Mac). Typing is INVISIBLE — type it and press Enter. THEN a sign-in link appears."
+    say "  Open that link and log in with the SAME account as your phone."
+    say ""
+    sudo -v || true
+    # Start the background daemon (formula tailscaled) if it isn't already answering.
     if ! "$TS_BIN" status >/dev/null 2>&1; then
       TSD="$(tsd_bin)"
-      if [ -n "$TSD" ]; then
-        # Not via run(): a trailing >/dev/null on a run() call also nulls run()'s own
-        # status line. Print it ourselves, then null only the daemon command's output.
-        say "  starting the Tailscale background service"
-        sudo "$TSD" install-system-daemon </dev/null >/dev/null 2>&1 || true
-      fi
+      [ -n "$TSD" ] && sudo "$TSD" install-system-daemon </dev/null >/dev/null 2>&1 || true
     fi
-    say ""
-    say "  ${C_BOLD}Sign in to Tailscale:${C_RESET} open the link it prints below in your browser"
-    say "  and sign in with the SAME account as your phone."
-    sudo "$TS_BIN" up </dev/null 2>&1 | sed 's/^/    /' || true
+    # Direct to the terminal — no `| sed`, no `</dev/null`: the URL must be unmistakable.
+    sudo "$TS_BIN" up || true
   elif [ "$PLATFORM" = "wsl" ]; then
-    sudo tailscale up </dev/null 2>&1 | sed 's/^/    /' || true
+    # Direct to the terminal so the auth URL is immediately visible (not buffered behind a pipe).
+    sudo tailscale up || true
   fi
 fi
 
