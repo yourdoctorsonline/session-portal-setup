@@ -953,11 +953,13 @@ else
 fi
 
 # ---- shared YDO Agentic OS workspace repo -----------------------------------
-# Offered on every preset: clone yourdoctorsonline/your-doctors-online if absent, or
-# git-pull it if already present. Private repo → needs the teammate's GitHub access;
-# fail-open on decline/auth/tooling (warn + manual command, never abort).
-# SETUP_WORKSPACE_REPO=0 (or answering n) skips it non-interactively.
-if [ "${SETUP_WORKSPACE_REPO:-1}" = "1" ]; then
+# Clones yourdoctorsonline/your-doctors-online (the team's PRIVATE shared Agentic OS
+# workspace) if absent, or git-pulls it if present. Fail-open on decline/auth/tooling.
+# DISABLED BY DEFAULT (2026-07-20): the private-repo clone was confusing teammates
+# (name mismatch vs. `agentic-os`, "couldn't clone (private)" dead-end without GitHub
+# access). Kept intact for easy re-enable once the access model is sorted — turn it back
+# on with SETUP_WORKSPACE_REPO=1. Default 0 = the step never prompts or runs.
+if [ "${SETUP_WORKSPACE_REPO:-0}" = "1" ]; then
   step_banner "Shared YDO workspace"
   WS_DEFAULT="$HOME/your-doctors-online"
   if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
