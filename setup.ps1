@@ -8,24 +8,32 @@
 # Run it in PowerShell with:
 #   irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex
 #
-# Optional (skip the in-installer menu):
-#   $env:SL_PRESET='portal'; irm .../setup.ps1 | iex        # full | harness | portal
+# Options are set via ENVIRONMENT VARIABLES (see below), because `irm ... | iex` runs
+# this text inline and cannot pass -parameters:
+#   $env:SL_PRESET='portal'; irm .../setup.ps1 | iex     # full | harness | portal
+#   $env:SL_DRYRUN='1';      irm .../setup.ps1 | iex     # print what would run, launch nothing
 #
 # PowerShell 5.1+ (Windows built-in) compatible. No external modules.
 # -----------------------------------------------------------------------------
-[CmdletBinding()]
-param(
-  # full | harness | portal — passed to the Linux installer as SETUP_PRESET.
-  [ValidateSet('full','harness','portal')]
-  [string]$Preset = $env:SL_PRESET,
-  # Print what would run and change nothing (testable off-Windows).
-  [switch]$DryRun
-)
-
+#
+# NB: no param()/[ValidateSet] block ON PURPOSE. Under `irm | iex`, Invoke-Expression
+# executes this script inline in the caller's scope — it does not bind a param block, and
+# applying a [ValidateSet] attribute to an unset $Preset throws
+# "The attribute cannot be added because variable Preset with value  would no longer be
+# valid." So config is read from $env:* and validated by hand.
 $ErrorActionPreference = 'Stop'
 $SetupUrl = 'https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.sh'
 
 function Say([string]$m, [string]$c = 'White') { Write-Host $m -ForegroundColor $c }
+
+# --- config from environment (irm|iex-safe) ----------------------------------
+$Preset = "$($env:SL_PRESET)".Trim().ToLower()
+$DryRun = ($env:SL_DRYRUN -eq '1')
+$ValidPresets = @('full','harness','portal')
+if ($Preset -and ($ValidPresets -notcontains $Preset)) {
+  Say ("Ignoring unknown preset '{0}' - use one of: {1}" -f $Preset, ($ValidPresets -join ', ')) 'Yellow'
+  $Preset = ''
+}
 
 function Show-WslSetupHelp {
   Say ''
