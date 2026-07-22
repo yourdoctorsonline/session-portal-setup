@@ -105,6 +105,17 @@ Two cost traps the benchmark surfaced:
   SMALLER models were MORE compliant; Opus/Sonnet over-elaborate and blow the limit. Constrained
   output → cheaper/constrained model.
 
+**Chain cost — a token's real price.** Output emitted at one step is paid once at that model's
+output-rate, then RE-PAID at input-rate at every LATER step that still carries it in context. Two
+consequences, in priority order (quantified in `projects/model-bench/chain_cost.py`):
+1. **Tier-per-step by ceiling is the dominant lever.** Not over-spending the frontier tier on a
+   sub-ceiling step swamps everything else — routing a BOUNDED check to Haiku instead of Fable cut a
+   4-step pipeline ~40% in the chain model. Fix the per-step tier first.
+2. **Compact the handoff.** Pass the next step a diff / findings / structured summary, NOT the full
+   output, so a verbose step can't tax the whole chain. Matters most in long/thin chains; near-zero
+   when base context already dwarfs step outputs (in a thick-context harness, feeder-terseness —
+   Haiku's verbosity vs Sonnet's — is second-order noise, so cheap-per-token still wins there).
+
 Never chat with Fable/Opus (dialogue is Sonnet's job).
 
 ## Spawn topology (economy's companion)
