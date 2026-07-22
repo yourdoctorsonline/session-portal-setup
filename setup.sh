@@ -51,6 +51,13 @@ ask() {
     eval "$__var=\$__default"
     return 0
   fi
+  # No controlling terminal: we cannot prompt. Take the default, but make it VISIBLE —
+  # silently defaulting the preset menu to a full install is an unconsented install.
+  if ! has_tty; then
+    [ -n "$__default" ] && warn "No terminal to ask \"$__prompt\" — using default: $__default"
+    eval "$__var=\$__default"
+    return 0
+  fi
   if [ -n "$__default" ]; then
     printf '%s [%s]: ' "$__prompt" "$__default" > /dev/tty
   else
@@ -128,7 +135,35 @@ upsert_env() {
 }
 
 have()     { command -v "$1" >/dev/null 2>&1; }
-creds_ok() { [ -f "$1/.credentials.json" ]; }
+
+# has_tty — rc 0 iff a controlling terminal can actually be OPENED. `[ -r /dev/tty ]` is
+# wrong: the 0666 tty inode is always "readable" even under setsid/automation with no
+# controlling terminal — only OPENING it proves one exists. SETUP_FAKE_TTY overrides for
+# tests (1=present, 0=absent).
+has_tty() {
+  if [ -n "${SETUP_FAKE_TTY:-}" ]; then [ "$SETUP_FAKE_TTY" = "1" ]; return; fi
+  ( exec 3</dev/tty ) 2>/dev/null
+}
+
+# macos_keychain_creds — rc 0 iff the macOS login Keychain holds a completed Claude login
+# ("Claude Code-credentials"). macOS stores the DEFAULT account's token HERE, not in a
+# .credentials.json file, so a file-only check false-negatives a signed-in default account
+# (the Session-3 "sign-in never detected" bug). SETUP_FAKE_KEYCHAIN overrides for tests.
+macos_keychain_creds() {
+  if [ -n "${SETUP_FAKE_KEYCHAIN:-}" ]; then [ "$SETUP_FAKE_KEYCHAIN" = "1" ]; return; fi
+  [ "${SETUP_FAKE_UNAME:-$(uname -s)}" = "Darwin" ] || return 1
+  security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1
+}
+
+# creds_ok DIR — rc 0 iff DIR has a completed Claude login. File first (works on Linux and
+# for cswap's per-account ~/.claude-* dirs); for the macOS DEFAULT dir, also accept the
+# Keychain entry (the real store there).
+creds_ok() {
+  local dir="$1"
+  [ -f "$dir/.credentials.json" ] && return 0
+  [ "$dir" = "$HOME/.claude" ] && macos_keychain_creds && return 0
+  return 1
+}
 
 # brew_bin -> echoes a usable Homebrew path, or nothing (rc 1). Checks the real install
 # locations (Apple-Silicon /opt/homebrew, Intel /usr/local) even when brew isn't on PATH
@@ -145,9 +180,22 @@ brew_bin() {
 # login profile so brew stays on PATH in future shells (heals the "command not found"
 # permanently, no manual PATH edit). A second call is a no-op.
 ensure_brew_on_path() {
-  local brew="$1" zp="${2:-$HOME/.zprofile}"
-  grep -q 'brew shellenv' "$zp" 2>/dev/null && return 0
-  printf '\n# Added by Session Launcher setup\neval "$(%s shellenv)"\n' "$brew" >> "$zp"
+  local brew="$1" zp="${2:-$HOME/.zprofile}" bp="${3:-}" line
+  # NB `$(...)` strips the trailing newline, so re-add it with '%s\n' on append — otherwise the
+  # next `echo … >> profile` (Homebrew's own installer, nvm, the user) glues onto the eval line.
+  line=$(printf '\n# Added by Session Launcher setup\neval "$(%s shellenv)"' "$brew")
+  # zsh login profile — always.
+  grep -q 'brew shellenv' "$zp" 2>/dev/null || printf '%s\n' "$line" >> "$zp"
+  # bash login profile — append to the file bash ACTUALLY reads, WITHOUT shadowing an existing
+  # one. Bash reads only the FIRST of .bash_profile/.bash_login/.profile, so blindly creating
+  # ~/.bash_profile when the user keeps their env in ~/.profile would silently disable ~/.profile.
+  if [ -n "$bp" ]; then
+    :                                              # explicit test override
+  elif [ -f "$HOME/.bash_profile" ]; then bp="$HOME/.bash_profile"
+  elif [ -f "$HOME/.bash_login" ];   then bp="$HOME/.bash_login"
+  elif [ -f "$HOME/.profile" ];      then bp="$HOME/.profile"   # append here, don't shadow it
+  else bp="$HOME/.bash_profile"; fi                # nothing exists → safe to create
+  grep -q 'brew shellenv' "$bp" 2>/dev/null || printf '%s\n' "$line" >> "$bp"
 }
 
 # normalize_preset RAW -> echoes canonical full|harness|portal (rc 0); else nothing (rc 1).
@@ -201,7 +249,7 @@ ws_repo_state() {
   # (someone/your-doctors-online) or look-alike (…-online-DIFFERENT) is NOT treated as
   # the canonical workspace.
   if [ -d "$d/.git" ] && git -C "$d" remote -v 2>/dev/null \
-       | grep -Eq "yourdoctorsonline/your-doctors-online(\.git)?([[:space:]]|$)"; then
+       | grep -Eq "[/:]yourdoctorsonline/your-doctors-online(\.git)?([[:space:]]|$)"; then
     echo pull
   elif [ -e "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
     echo occupied
@@ -227,10 +275,14 @@ ts_bin() {
   return 1
 }
 
-# tsip — the tailnet IPv4, via whichever tailscale CLI ts_bin resolves (empty if none/down).
+# tsip — the tailnet IPv4 (empty if none/down). Prefers the FORMULA CLI (ts_cli_bin) so a
+# migration machine whose GUI app was just quit still reads the formula daemon's address;
+# only falls back to ts_bin (which may resolve the app bundle) when no formula CLI exists.
 tsip() {
   local ts
-  ts="$(ts_bin)" || return 0
+  ts="$(ts_cli_bin)"
+  [ -n "$ts" ] || ts="$(ts_bin)" || return 0
+  [ -n "$ts" ] || return 0
   "$ts" ip -4 2>/dev/null | head -1
 }
 
@@ -283,10 +335,13 @@ claude_signin() {
           script -q /dev/null claude <"$tty" >"$tty" 2>&1 || true
         fi ;;
       *)
+        # Pass the config dir through the ENVIRONMENT, never interpolated into the single-quoted
+        # `script -c` string — otherwise a $HOME containing a single quote breaks/injects the
+        # command. `script` inherits our env, so `claude` still sees CLAUDE_CONFIG_DIR.
         if [ -n "$cfg" ]; then
-          script -qec "CLAUDE_CONFIG_DIR='$cfg' claude" /dev/null <"$tty" >"$tty" 2>&1 || true
+          CLAUDE_CONFIG_DIR="$cfg" script -qec 'claude' /dev/null <"$tty" >"$tty" 2>&1 || true
         else
-          script -qec "claude" /dev/null <"$tty" >"$tty" 2>&1 || true
+          script -qec 'claude' /dev/null <"$tty" >"$tty" 2>&1 || true
         fi ;;
     esac
   else
@@ -385,6 +440,118 @@ else:
 PY
 }
 
+# expand_home PATH -> expand a leading ~ / ~/ to $HOME (the shell does NOT expand a tilde
+# that arrives quoted from `read`, so `mkdir "~/projects"` would make a literal ~ folder).
+expand_home() {
+  case "$1" in
+    "~")   printf '%s\n' "$HOME" ;;
+    "~/"*) printf '%s\n' "$HOME/${1#\~/}" ;;
+    *)     printf '%s\n' "$1" ;;
+  esac
+}
+
+# platform_help [SYS] -> machine-appropriate guidance for an unsupported platform. Native
+# Linux (not WSL) gets a Linux-specific note; anything else gets the Windows/WSL2 steps.
+# (Native Linux was previously told to run `wsl --install`, which is nonsense on Linux.)
+platform_help() {
+  local sys="${1:-${SETUP_FAKE_UNAME:-$(uname -s)}}"
+  if [ "$sys" = "Linux" ]; then
+    say "This installer supports macOS and Windows (via WSL2 Ubuntu) today."
+    say "Native Linux isn't supported yet — the portal's service wiring is Mac/WSL-specific."
+    say "If you need a native-Linux path, open an issue on the session-portal-setup repo."
+  else
+    say "If you're on Windows, set up WSL2 first, then re-run this:"
+    say "  1. Open PowerShell as Administrator (right-click > Run as administrator)"
+    say "  2. Run:  wsl --install"
+    say "  3. Restart your PC when it asks."
+    say "  4. Open the 'Ubuntu' app from the Start menu and finish its first-time setup."
+    say "  5. Paste this same install command into the Ubuntu window."
+  fi
+}
+
+# ensure_python3 -> make python3 available (the harness enforcement hooks need it). The
+# harness-only preset skips the tools step, so on a fresh Mac python3 can be absent and the
+# hooks silently fail to wire. Best-effort install; rc reflects whether python3 ended up present.
+# python3_ok -> rc 0 iff a WORKING python3 runs. `have python3` (command -v) isn't enough on
+# macOS: the /usr/bin/python3 Command-Line-Tools STUB is on PATH even with no CLT installed, so
+# presence succeeds while execution fails. Test execution, not presence. SETUP_FAKE_PY3 overrides.
+python3_ok() {
+  if [ -n "${SETUP_FAKE_PY3:-}" ]; then [ "$SETUP_FAKE_PY3" = "1" ]; return; fi
+  python3 -c '' >/dev/null 2>&1
+}
+
+ensure_python3() {
+  python3_ok && return 0
+  [ "${SETUP_DRYRUN:-0}" = "1" ] && return 0
+  case "${SETUP_FAKE_UNAME:-$(uname -s)}" in
+    Darwin)
+      local brew; brew="$(brew_bin)"
+      [ -n "$brew" ] && "$brew" install python3 </dev/null >/dev/null 2>&1 || true ;;
+    *)
+      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3 </dev/null >/dev/null 2>&1 || true ;;
+  esac
+  python3_ok
+}
+
+# wslconf_has_systemd FILE -> rc 0 iff FILE already enables systemd (so a re-run can skip the
+# rewrite + forced `wsl --shutdown`). Tolerant of surrounding whitespace.
+wslconf_has_systemd() {
+  grep -Eqs '^[[:space:]]*systemd[[:space:]]*=[[:space:]]*true' "$1" 2>/dev/null
+}
+
+# wslconf_render FILE -> emit the DESIRED /etc/wsl.conf content on stdout with [boot] systemd=true
+# ensured and every existing section PRESERVED (the old `sudo tee` truncated the file, destroying
+# any [automount]/[network] config — data loss). Pure filter: the caller handles the sudo write.
+wslconf_render() {
+  local f="$1"
+  if [ ! -e "$f" ] || [ ! -s "$f" ]; then
+    printf '[boot]\nsystemd=true\n'; return 0
+  fi
+  if ! grep -Eqs '^[[:space:]]*\[boot\]' "$f" 2>/dev/null; then
+    # Common case (e.g. an [automount]-only file): NO [boot] section. Emit the existing content
+    # verbatim — comments, blank lines, everything — then append a [boot] block. Zero loss.
+    cat "$f"
+    printf '\n[boot]\nsystemd=true\n'
+    return 0
+  fi
+  # [boot] exists but doesn't set systemd=true → a surgical in-section edit is needed. python3
+  # preferred (keys/sections preserved; inline comments may be dropped — rare, non-destructive).
+  if [ -z "${SETUP_FORCE_AWK:-}" ] && have python3; then
+    python3 - "$f" <<'PY'
+import sys, configparser
+cp = configparser.ConfigParser(); cp.optionxform = str
+try:
+    cp.read(sys.argv[1])
+except Exception:
+    sys.stdout.write(open(sys.argv[1]).read().rstrip() + "\n\n[boot]\nsystemd=true\n"); sys.exit(0)
+if not cp.has_section("boot"):
+    cp.add_section("boot")
+cp.set("boot", "systemd", "true")
+cp.write(sys.stdout)
+PY
+    return 0
+  fi
+  # no python3 (shouldn't happen on WSL after Step 2): awk pass-through that sets systemd=true
+  # inside [boot], preserving all other content. Detects the header by PREFIX (tolerates an
+  # inline comment) and REPLACES any existing systemd= line rather than appending a duplicate.
+  awk '
+    BEGIN { inboot=0; done=0 }
+    /^[[:space:]]*\[/ {
+      if (inboot && !done) { print "systemd=true"; done=1 }
+      inboot = ($0 ~ /^[[:space:]]*\[boot\]/)
+      print; next
+    }
+    {
+      if (inboot && $0 ~ /^[[:space:]]*systemd[[:space:]]*=/) {
+        if (!done) { print "systemd=true"; done=1 }
+        next
+      }
+      print
+    }
+    END { if (inboot && !done) print "systemd=true" }
+  ' "$f"
+}
+
 # --- sourcing guard: the test harness stops here -----------------------------
 if [ "${SETUP_LIB_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
@@ -457,15 +624,11 @@ case "$PLATFORM" in
     ok "Windows (WSL2 Ubuntu) detected."
     ;;
   *)
-    # AC-TI-003: unsupported platform — print the Windows guide, change nothing, exit 2.
+    # AC-TI-003: unsupported platform — print the right guidance, change nothing, exit 2.
+    # Native Linux gets a Linux-specific note; Windows/other gets the WSL2 steps.
     fail_msg "This doesn't look like a Mac or WSL2 Ubuntu."
     say ""
-    say "If you're on Windows, set up WSL2 first, then re-run this:"
-    say "  1. Open PowerShell as Administrator (right-click > Run as administrator)"
-    say "  2. Run:  wsl --install"
-    say "  3. Restart your PC when it asks."
-    say "  4. Open the 'Ubuntu' app from the Start menu and finish its first-time setup."
-    say "  5. Paste this same install command into the Ubuntu window."
+    platform_help
     exit 2
     ;;
 esac
@@ -525,7 +688,9 @@ if [ "$PLATFORM" = "mac" ]; then
     # is for its one-time folder setup DURING the install — so prime your password once now
     # and keep it fresh, then run the installer NON-interactively (no RETURN-keypress hang).
     say "Homebrew needs your Mac login password once to set itself up..."
-    sudo -v 2>/dev/null || true
+    # No 2>/dev/null: sudo's "Password:" prompt must stay VISIBLE, or the step looks hung
+    # while sudo silently blocks on tty input (the Session-3 "stuck at Homebrew" bug).
+    sudo -v || true
     ( while sudo -n true 2>/dev/null; do sleep 50; kill -0 "$$" 2>/dev/null || break; done ) &
     _KA=$!
     say "Installing Homebrew (the tool that installs other tools)..."
@@ -637,9 +802,10 @@ if preset_wants "$PRESET" signin; then
     ok "You're already signed in to Claude."
   elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
     say "DRYRUN: would sign in to Claude (interactive)."
-  elif [ ! -r /dev/tty ]; then
+  elif ! has_tty; then
     # No controlling terminal (piped without a tty) is exactly when the CLI crashes on
-    # process.stdout.isTTY — DON'T launch it. Guide instead, and continue.
+    # process.stdout.isTTY — DON'T launch it. Guide instead, and continue. (has_tty OPENS
+    # /dev/tty; `[ -r /dev/tty ]` was wrong — the 0666 inode reads as readable under setsid.)
     warn "Can't open an interactive sign-in here (no terminal attached)."
     say  "  Run  claude  yourself in a normal terminal, sign in, type /exit, then"
     say  "  re-run me. Continuing with everything that doesn't need sign-in."
@@ -751,11 +917,30 @@ elif [ "$PLATFORM" = "wsl" ]; then
   # Tailscale needs systemd; WSL only has it when [boot] systemd=true is set.
   if [ "${SETUP_DRYRUN:-0}" != "1" ] && ! systemctl --user show-environment >/dev/null 2>&1 \
        && ! systemctl is-system-running >/dev/null 2>&1; then
-    warn "WSL needs systemd turned on before Tailscale can run."
-    run "enabling systemd in WSL" sudo tee /etc/wsl.conf >/dev/null <<'WSLCONF'
-[boot]
-systemd=true
-WSLCONF
+    # Snapshot the CURRENT wsl.conf into a user-readable temp first. It may be root-only-readable
+    # (admin created it with a restrictive umask): a user-level read would then see an empty file
+    # and the merge would truncate it. Read via sudo when we can't read it directly.
+    _WSLCUR="$(mktemp "${TMPDIR:-/tmp}/wslcur.XXXXXX")"
+    if [ -e /etc/wsl.conf ]; then
+      if [ -r /etc/wsl.conf ]; then cat /etc/wsl.conf > "$_WSLCUR" 2>/dev/null
+      else sudo cat /etc/wsl.conf > "$_WSLCUR" 2>/dev/null || true; fi
+    fi
+    if wslconf_has_systemd "$_WSLCUR"; then
+      # Already configured — it just needs the one-time WSL restart to take effect. Don't
+      # rewrite the file (and don't clobber other sections); just prompt the restart.
+      warn "systemd is set in /etc/wsl.conf but WSL hasn't restarted to pick it up yet."
+      rm -f "$_WSLCUR"
+    else
+      warn "WSL needs systemd turned on before Tailscale can run."
+      # Preserve all existing content — the old `sudo tee` TRUNCATED the file, destroying any
+      # [automount]/[network] config (data loss). Render a merged copy, install it, and restore
+      # world-readable perms (cp from a 0600 mktemp would otherwise leave wsl.conf unreadable).
+      _WSLNEW="$(mktemp "${TMPDIR:-/tmp}/wslconf.XXXXXX")"
+      wslconf_render "$_WSLCUR" > "$_WSLNEW"
+      run "enabling systemd in WSL (preserving existing config)" sudo cp "$_WSLNEW" /etc/wsl.conf
+      sudo chmod 644 /etc/wsl.conf 2>/dev/null || true
+      rm -f "$_WSLCUR" "$_WSLNEW"
+    fi
     say ""
     say "Almost there — one quick restart of WSL is needed:"
     say "  1. Open PowerShell and run:  wsl --shutdown"
@@ -843,11 +1028,15 @@ run "creating $BIN_DIR" mkdir -p "$BIN_DIR"
 if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
   say "DRYRUN: would copy $SRC/files/* into $BIN_DIR"
 else
-  cp "$SRC"/files/* "$BIN_DIR"/ 2>/dev/null || {
-    fail_msg "Couldn't copy the portal files from $SRC/files."
-    exit 1
-  }
-  chmod +x "$BIN_DIR"/*.sh 2>/dev/null || true
+  # Fail-open (like every other step): a portal-copy failure must NOT hard-abort the whole
+  # installer and skip the harness/hooks/RustDesk steps that come after. Warn and continue;
+  # the verify checklist reports the portal as not-live.
+  if cp "$SRC"/files/* "$BIN_DIR"/ 2>/dev/null; then
+    chmod +x "$BIN_DIR"/*.sh 2>/dev/null || true
+  else
+    warn "Couldn't copy the portal files from $SRC/files — skipping the portal, continuing."
+    say  "  (Re-run me once the download looks complete to finish the portal.)"
+  fi
 fi
 else
   say "  [skip] phone portal — not needed for: $PRESET_LABEL"
@@ -855,20 +1044,27 @@ fi
 
 # YDO Agentic Harness — the build-discipline skill (spec -> plan -> build -> verify
 # -> ship + learning tripwire). Only when the preset asks for it.
-if preset_wants "$PRESET" harness && [ -d "$SRC/harness" ]; then
+if preset_wants "$PRESET" harness; then
+ SKILL_DIR="$HOME/.claude/skills/eng-harness"
+ if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
   step_banner "Installing the YDO Agentic Harness"
-  SKILL_DIR="$HOME/.claude/skills/eng-harness"
-  if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
-    say "DRYRUN: would install the YDO Agentic Harness to $SKILL_DIR"
+  say "DRYRUN: would install the YDO Agentic Harness to $SKILL_DIR"
+ elif [ -d "$SRC/harness" ]; then
+  step_banner "Installing the YDO Agentic Harness"
+  mkdir -p "$SKILL_DIR"
+  if cp -R "$SRC/harness/." "$SKILL_DIR/" 2>/dev/null; then
+    chmod +x "$SKILL_DIR"/scripts/*.sh 2>/dev/null || true
+    ok "YDO Agentic Harness installed (skill + learning tripwire)"
   else
-    mkdir -p "$SKILL_DIR"
-    if cp -R "$SRC/harness/." "$SKILL_DIR/" 2>/dev/null; then
-      chmod +x "$SKILL_DIR"/scripts/*.sh 2>/dev/null || true
-      ok "YDO Agentic Harness installed (skill + learning tripwire)"
-    else
-      warn "Couldn't install the YDO Agentic Harness skill."
-    fi
+    warn "Couldn't install the YDO Agentic Harness skill."
   fi
+ else
+  # The preset asked for the harness but the (real) download didn't include it — don't
+  # silently install nothing.
+  step_banner "Installing the YDO Agentic Harness"
+  warn "The YDO Agentic Harness files are missing from the download ($SRC/harness)."
+  say  "  Re-run me once the download completes; report this if it keeps happening."
+ fi
 fi
 
 # Enforcement hooks (merge-gate + compaction snapshot) — dropped into the user-level
@@ -884,8 +1080,16 @@ if preset_wants "$PRESET" harness && [ -d "$SRC/harness/hooks" ]; then
     mkdir -p "$USER_HOOKS"
     if cp "$SRC"/harness/hooks/*.py "$USER_HOOKS"/ 2>/dev/null; then
       chmod +x "$USER_HOOKS"/*.py 2>/dev/null || true
+      # The hooks run under python3. The harness-only preset skips the tools step, so on a
+      # fresh Mac python3 can be absent — provision it before wiring rather than silently fail.
+      ensure_python3 || true
       if wire_global_hooks "$SETTINGS" "$USER_HOOKS" >/dev/null 2>&1; then
         ok "Enforcement hooks wired (merge gate + compaction snapshot)"
+      elif ! python3_ok; then
+        warn "Couldn't wire the enforcement hooks: a working Python 3 isn't available (the hooks need it)."
+        say  "  Install it, then re-run me:"
+        say  "    mac:  xcode-select --install   (or  brew install python3)"
+        say  "    wsl:  sudo apt-get install -y python3"
       else
         warn "Couldn't auto-wire the enforcement hooks into $SETTINGS."
         say  "  Add these two hooks yourself in Claude Code, or re-run me:"
@@ -913,11 +1117,20 @@ if [ "$PLATFORM" = "mac" ]; then
       warn "Template $TPL missing — skipping $label."
       continue
     fi
-    sed "s|__HOME__|$HOME|g" "$TPL" > "$PLIST"
-    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null \
-      && ok "Loaded $label" \
-      || warn "Couldn't load $label — you may need to grant permission and re-run."
+    _NEWPLIST="$(mktemp "${TMPDIR:-/tmp}/plist.XXXXXX")"
+    sed "s|__HOME__|$HOME|g" "$TPL" > "$_NEWPLIST"
+    if cmp -s "$_NEWPLIST" "$PLIST" 2>/dev/null && launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+      # Unchanged plist AND already loaded — DON'T bootout/reload: a harmless re-run must not
+      # kill a live portal session (active tmux/ttyd) by tearing the service down.
+      rm -f "$_NEWPLIST"
+      ok "$label already loaded (unchanged)"
+    else
+      mv "$_NEWPLIST" "$PLIST"
+      launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null \
+        && ok "Loaded $label" \
+        || warn "Couldn't load $label — you may need to grant permission and re-run."
+    fi
   done
 elif [ "$PLATFORM" = "wsl" ]; then
   SD_DIR="$HOME/.config/systemd/user"
@@ -941,6 +1154,9 @@ step_banner "Choosing your projects folder"
 CUR_WS=""
 [ -f "$ENV_FILE" ] && CUR_WS="$(grep '^WORKSPACE_ROOT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
 ask WSROOT "Where do your project folders live?" "${CUR_WS:-$HOME/repos}"
+# A typed "~/projects" arrives quoted from read — the shell won't expand it, so mkdir would
+# create a literal "~" directory. Expand a leading ~ ourselves.
+WSROOT="$(expand_home "$WSROOT")"
 run "creating $WSROOT" mkdir -p "$WSROOT"
 if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
   say "DRYRUN: would save WORKSPACE_ROOT=$WSROOT to $ENV_FILE"
@@ -970,6 +1186,7 @@ if [ "${SETUP_WORKSPACE_REPO:-0}" = "1" ]; then
       [Nn]*) say "  [skip] shared workspace — you can clone it later." ;;
       *)
         ask WS_DIR "Where should it live?" "$WS_DEFAULT"
+        WS_DIR="$(expand_home "$WS_DIR")"   # expand a typed ~ (same reason as the projects folder)
         case "$(ws_repo_state "$WS_DIR")" in
           pull)
             say "Updating the workspace at $WS_DIR ..."
