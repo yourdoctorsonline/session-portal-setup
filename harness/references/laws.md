@@ -70,10 +70,27 @@ one-line reason.
 
 ## Model routing (economy, not law)
 
-Mechanical steps (transcription-grade implementation from a complete plan, log
-scanning) → cheapest model that works. Judgment steps (final review, adversarial
-verify, architecture) → the most capable model available. State the model choice in
-each subagent dispatch; a dispatch that omits it silently inherits the expensive one.
+Route by **output-token intensity and cognitive shape**, not by "importance." Output
+tokens cost ~5× input ($10/M in vs $50/M out on the frontier tier), so the expensive
+models belong in the LOW-output/high-judgment phases and the cheap ones in the
+HIGH-output phases. Four verbs, four models:
+
+| Verb | Phase examples | Model |
+|------|----------------|-------|
+| **Decide** | intake, spec, plan, architecture, final ship judgment | **Opus** (conductor; holds full context) |
+| **Make**   | Build/implementation from a complete plan (high output) | **Sonnet** (the default) |
+| **Check**  | Phase-5 adversarial review, security/edge-case hunt, "meets spec?" | **Fable** (best reviewer — see the bake-off, `wiki/methodology/eng-harness.md`) |
+| **Grind**  | log/transcript scan, rename sweeps, parallel file reads, mechanical edits | **Haiku** |
+
+Two-class subagent rule (do NOT set a blanket cheap subagent default): **implementers →
+Sonnet/Haiku** (high output), but **reviewers/verifiers → Fable** (finding flaws is
+exactly where the expensive model earns its rate, and its output is tiny). A global
+`CLAUDE_CODE_SUBAGENT_MODEL=sonnet` is only the safe FLOOR for unnamed dispatches;
+per-dispatch `model:` overrides it and always wins. State the model choice in EVERY
+subagent dispatch — a dispatch that omits it inherits the floor, and a reviewer left on
+the floor silently degrades the whole verify gate. Never chat with Fable/Opus (dialogue
+is Sonnet's job). Cost is per FINISHED task, not per token: a pricier one-shot beats a
+cheap redo.
 
 ## Spawn topology (economy's companion)
 

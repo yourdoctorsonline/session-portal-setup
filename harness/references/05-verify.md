@@ -34,6 +34,14 @@ hardening rules. Reviewers are dispatched by the depth-0 controller, never by an
 implementer subagent (depth-1 can't spawn — see `04-build.md` § Spawn topology).
 This holds if review ever moves per-task into Phase 4: still controller-driven.
 
+**Route reviewers to Fable** (`model: 'fable'`) — finding what's broken is where the
+frontier reasoner earns its rate, its output is tiny (findings, not code), and it won a
+head-to-head bake-off on real review work (most real bugs, fewest false positives,
+cheapest per bug — `wiki/methodology/eng-harness.md`). Give reviewers an **output-only
+discipline: return findings (file:line + quote + severity + failure scenario), never
+rewritten code** — that keeps the expensive tier cheap and forces the fix back onto the
+Sonnet build step.
+
 - **Do Not Trust the Report** — the reviewer treats implementer reports as
   unverified claims and verifies them against the diff and the action ledger
   (give the reviewer the watch JSONL path as ground truth).
@@ -45,7 +53,7 @@ Two verdicts per task, kept separate: **Spec compliance** vs the AC IDs
 (Missing / Extra / Misunderstood — over-building is a failure too) and **Code
 quality** (Critical / Important / Nice-to-have). Critical or Important → fix →
 mandatory re-review. Loop until zero blocking findings. Lane C: final whole-branch
-review on the most capable model + security pass (OWASP basics, secrets scan).
+review on Fable + security pass (OWASP basics, secrets scan).
 `meta-proof-of-work` Gate 2 satisfies the final adversarial pass where installed.
 
 ## Layer 3 — Runtime (tests pass ≠ feature works)
