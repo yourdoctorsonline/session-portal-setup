@@ -70,27 +70,42 @@ one-line reason.
 
 ## Model routing (economy, not law)
 
-Route by **output-token intensity and cognitive shape**, not by "importance." Output
-tokens cost ~5× input ($10/M in vs $50/M out on the frontier tier), so the expensive
-models belong in the LOW-output/high-judgment phases and the cheap ones in the
-HIGH-output phases. Four verbs, four models:
+**The ceiling decides — not the domain, not the verb.** A 384-generation benchmark across
+engineering/marketing/operations/accounting × make/decide/check/grind found all four models
+(Fable/Opus/Sonnet/Haiku) tied within <1 point on WELL-SPECIFIED, bounded tasks — classification,
+small bug lists, standard decisions, reconciliation, routine copy. On those, tier is a COST lever,
+not an accuracy lever: default to the cheapest that works. Tier becomes an ACCURACY lever only at a
+HIGH task ceiling — large-scope review, novel/ambiguous hard reasoning, long autonomous multi-step
+(Fable found 8/14 real bugs in a 1,130-line file vs Opus's 5, yet ties everyone on a 12-item bug
+list). Before paying 4–5× for Fable/Opus, ask: **is THIS task at its ceiling?** If not, don't.
+(Evidence: `wiki/methodology/eng-harness.md` — model-bench + the review bake-off.)
 
-| Verb | Phase examples | Model |
-|------|----------------|-------|
+Within that, route by **output-token intensity and cognitive shape**: output tokens cost ~5× input
+($10/M in vs $50/M out), so expensive models belong in LOW-output/high-judgment phases. Four verbs →
+four DEFAULT models (escalate UP only at a high ceiling):
+
+| Verb | Phase examples | Default model |
+|------|----------------|---------------|
 | **Decide** | intake, spec, plan, architecture, final ship judgment | **Opus** (conductor; holds full context) |
 | **Make**   | Build/implementation from a complete plan (high output) | **Sonnet** (the default) |
-| **Check**  | Phase-5 adversarial review, security/edge-case hunt, "meets spec?" | **Fable** (best reviewer — see the bake-off, `wiki/methodology/eng-harness.md`) |
+| **Check**  | adversarial review, security/edge-case hunt, "meets spec?" | **Fable** for a LARGE / open-ended surface (whole-branch, big diff, novel code); **Sonnet/Haiku** for a BOUNDED check (small diff, short list) — they tie Fable there |
 | **Grind**  | log/transcript scan, rename sweeps, parallel file reads, mechanical edits | **Haiku** |
 
 Two-class subagent rule (do NOT set a blanket cheap subagent default): **implementers →
-Sonnet/Haiku** (high output), but **reviewers/verifiers → Fable** (finding flaws is
-exactly where the expensive model earns its rate, and its output is tiny). A global
-`CLAUDE_CODE_SUBAGENT_MODEL=sonnet` is only the safe FLOOR for unnamed dispatches;
-per-dispatch `model:` overrides it and always wins. State the model choice in EVERY
-subagent dispatch — a dispatch that omits it inherits the floor, and a reviewer left on
-the floor silently degrades the whole verify gate. Never chat with Fable/Opus (dialogue
-is Sonnet's job). Cost is per FINISHED task, not per token: a pricier one-shot beats a
-cheap redo.
+Sonnet/Haiku**; **reviewers/verifiers of a HIGH-ceiling surface → Fable**. A global
+`CLAUDE_CODE_SUBAGENT_MODEL=sonnet` is the safe FLOOR for unnamed dispatches; per-dispatch `model:`
+overrides it and always wins. Name the model in EVERY dispatch — a reviewer left on the floor for a
+high-ceiling surface silently degrades the whole verify gate.
+
+Two cost traps the benchmark surfaced:
+- **Cost is per FINISHED task, not per token.** Haiku is cheapest per token but its output BALLOONS
+  when unsure (≈2× on hard tasks) — cheap-tier ≠ fewest-tokens on hard work. A pricier one-shot still
+  beats a cheap redo.
+- **Bigger isn't better at constraints.** On tight output rules (char limits, strict formats) the
+  SMALLER models were MORE compliant; Opus/Sonnet over-elaborate and blow the limit. Constrained
+  output → cheaper/constrained model.
+
+Never chat with Fable/Opus (dialogue is Sonnet's job).
 
 ## Spawn topology (economy's companion)
 
