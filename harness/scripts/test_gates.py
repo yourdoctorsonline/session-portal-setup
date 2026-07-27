@@ -575,9 +575,25 @@ class DriftGuardTests(unittest.TestCase):
         return env
 
     def test_32_repo_copy_resolves_from_inside_the_repo(self):
-        """Run from inside the checkout, the repo copy must actually resolve."""
+        """Run from inside a git checkout, the repo copy must actually resolve.
+
+        Builds its OWN fixture repo rather than using this file's location. The
+        first version ran from `dirname(HERE)`, which is a git checkout only when
+        the tests live in the repo — in the INSTALLED copy at
+        ~/.claude/skills/eng-harness it is not, so the guard correctly reported
+        "repo copy not resolved" and this test failed for every teammate who ran
+        the shipped suite. A test that passes only at its author's path is a
+        test about the author's path.
+        """
+        repo = os.path.join(self.tmp, "fixturerepo")
+        skill = os.path.join(repo, ".claude", "skills", "eng-harness")
+        os.makedirs(os.path.join(skill, "references"), exist_ok=True)
+        os.makedirs(os.path.join(skill, "scripts"), exist_ok=True)
+        with open(os.path.join(skill, "SKILL.md"), "w") as fh:
+            fh.write("fixture\n")
+        _git(repo, "init", "-q")
         r = subprocess.run(["bash", DRIFT_SH], capture_output=True, text=True,
-                           env=self._bare_env(), cwd=os.path.dirname(HERE))
+                           env=self._bare_env(), cwd=repo)
         self.assertNotIn("repo copy not resolved", r.stdout + r.stderr)
 
     def test_33_unresolvable_repo_copy_is_unverified_not_clean(self):

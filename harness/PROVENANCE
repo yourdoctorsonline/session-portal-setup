@@ -1,7 +1,7 @@
-source_commit=0216de31
+source_commit=411e40fc
 source_branch=feat/installer-payload-sync
 source_dirty=0
-harness_stamp=1785155595
+harness_stamp=1785184401
 regress_override=0
 sha256 e60102ac5ee253771b01e88a208b482d689869240ddd7835be2b129b62a1f9e2  harness/hooks/merge-gate.py
 sha256 f7300b49a997353fd58560c60df2c3ef07404bd0de8d60380d6253b478321103  harness/hooks/precompact-run-snapshot.py
@@ -18,7 +18,7 @@ sha256 c67fbb73389f80469771a9318db30a8b3cf37b83bb70e4d0e79b61c6c82d90e8  harness
 sha256 258d564613664f8a68925d8ce0579073d1894ff0e1214a54a91ce41ceb5edf2e  harness/scripts/ledger.sh
 sha256 ca463beb0ab7090ec8cfdd79d168d5e0ccd9dff2b5ff884ad001ab5dc8637d43  harness/scripts/lesson_tripwire.py
 sha256 7d8af202a5b70afb26c547d88d5e0440b26fb9f935e36716a6e5ff93a7a5bec9  harness/scripts/scaffold-run.sh
-sha256 9cf91cfcd8e317d238c840c30721dff108cc8af06009d28e2ef9ceade46bf124  harness/scripts/test_gates.py
+sha256 787f2a4b0d8aa0453cdf887070f879e06f16926943bce6a48ab445556bedf158  harness/scripts/test_gates.py
 sha256 0e610fa0bdf87cf22a8b2086c62058715c56d01802e45e07b6193995e567b44b  harness/scripts/test_lesson_tripwire.py
 sha256 647e2a28906c1d46d1ef73ab9e5308cb43babeebfba2a057c06a76f87fbd10eb  harness/scripts/trigger-contract.sh
 sha256 22c9b64e3ef96e9deb2fa99813903c25ed8e75c39a505914ffe570251148ed77  harness/scripts/watch.py
