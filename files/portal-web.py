@@ -12,7 +12,7 @@ tailnet membership already means "is the owner" (never expose via `tailscale
 funnel`). Subprocess with list-args (no shell injection), 512 KB read cap.
 Terminals are served by ttyd on :7681 (this app 302-redirects to it).
 """
-import base64, html, json, os, re, socket, subprocess, sys, time, urllib.parse
+import base64, html, json, os, re, socket, subprocess, sys, time, urllib.parse, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOME = os.path.expanduser("~")
@@ -21,6 +21,13 @@ PORT = 8090
 TTYD_PORT = 7681
 MAX_READ = 512_000
 SEP = "\x1f"
+CAPTURE_DEFAULT_LINES = 200
+CAPTURE_MAX_LINES = 2000
+CAPTURE_MAX_BYTES = 256 * 1024
+PASTE_MAX_BYTES = 8192
+# Absurdity guard only — NOT the cap. See paste_session for why the two differ.
+PASTE_HARD_LIMIT = PASTE_MAX_BYTES * 16
+PASTE_BUFFER = "portal-paste"
 
 def tailnet_ip():
     for p in ("/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale", "/usr/bin/tailscale", "tailscale"):
@@ -214,6 +221,18 @@ def launch_shell(name, cwd):
         return {"ok": False, "error": (r.stderr or r.stdout).strip() or "shell launch failed"}
     return {"ok": True, "tmux": uniq}
 
+def _bad_session_name(name):
+    """True if a name could make tmux act on a session other than the one named.
+
+    tmux consumes a TRAILING ";" in an argv value as a command separator (see
+    `man tmux`, COMMANDS), so `-t "=work;"` resolves to the session `work` —
+    verified live. `--` does not help: the split happens at the command-SEQUENCE
+    layer, above per-command getopt. On kill that is destructive, so every
+    session-name-taking endpoint runs this before any tmux call, from one place
+    rather than four copies that can drift apart.
+    """
+    return ";" in name or "\n" in name or "\r" in name
+
 def kill_session(name):
     """Kill one session, and only that one.
 
@@ -226,6 +245,8 @@ def kill_session(name):
     """
     if not name:
         return {"ok": False, "error": "no session name"}
+    if _bad_session_name(name):
+        return {"ok": False, "error": "bad session name"}
     try:
         r = subprocess.run([TMUX, "kill-session", "-t", f"={name}"],
                            capture_output=True, text=True, timeout=8)
@@ -254,6 +275,8 @@ def scroll_session(name, direction):
     """
     if not name:
         return {"ok": False, "error": "no session name"}
+    if _bad_session_name(name):
+        return {"ok": False, "error": "bad session name"}
     if direction not in ("up", "down", "live"):
         return {"ok": False, "error": "bad direction"}
     sess = f"={name}"    # session target (exact match, like kill_session)
@@ -279,6 +302,190 @@ def scroll_session(name, direction):
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True}
+
+def capture_session(name, lines=None):
+    """Read a session's pane content for the phone's Copy sheet.
+
+    "-J" rejoins lines the narrow phone pane wrapped, so a long URL/path comes
+    back as ONE copyable string instead of split across several. Pane target
+    is "={name}:" (trailing colon) for the same reason as scroll_session:
+    capture-pane is pane-scoped and rejects a bare "=name" session target.
+    Newest content is kept on truncation — that's what a phone user scrolled
+    down to read.
+
+    A name containing ";" is rejected up front: tmux's command-SEQUENCE
+    parser treats ";" as a separator ABOVE per-command target resolution, so
+    `has-session -t "=work;"` can validate the session "work" and return rc 0
+    even when no session is literally named "work;" — after which the pane
+    command targeting "=work;:" fails, but has-session's tmux call has
+    already gone out (an AC-PCP-004 violation: no tmux command may be issued
+    for a name that isn't a live session). "\\n"/"\\r" are rejected for the
+    same reason a raw newline in tmux target syntax is never legitimate. No
+    stricter charset is imposed beyond that — real session names may contain
+    dots or other characters, and over-restricting would break them.
+    """
+    if not name:
+        return {"ok": False, "error": "no session name"}
+    if _bad_session_name(name):
+        return {"ok": False, "error": "bad session name"}
+    try:
+        # json.loads accepts bare Infinity/-Infinity, and int(float('inf'))
+        # raises OverflowError rather than ValueError. Left out of this tuple,
+        # that error unwinds out of do_POST (whose try only covers body
+        # parsing) into a connection reset instead of the {ok:false} contract
+        # every other bad `lines` value gets — an AC-PCP-002 violation.
+        n = int(lines)
+    except (TypeError, ValueError, OverflowError):
+        n = CAPTURE_DEFAULT_LINES
+    n = max(1, min(n, CAPTURE_MAX_LINES))
+    sess = f"={name}"
+    pane = f"={name}:"
+    try:
+        if subprocess.run([TMUX, "has-session", "-t", sess],
+                          capture_output=True, text=True, timeout=8).returncode != 0:
+            return {"ok": False, "error": "no such session"}
+        r = subprocess.run([TMUX, "capture-pane", "-p", "-J", "-S", f"-{n}", "-t", pane],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return {"ok": False, "error": (r.stderr or r.stdout).strip() or "capture failed"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    text = (r.stdout or "").rstrip("\n")
+    truncated = False
+    data = text.encode("utf-8")
+    if len(data) > CAPTURE_MAX_BYTES:
+        text = data[-CAPTURE_MAX_BYTES:].decode("utf-8", "ignore")
+        truncated = True
+    return {"ok": True, "text": text, "truncated": truncated}
+
+def _sanitize_paste_text(text):
+    """Strip everything a phone clipboard has no legitimate reason to carry.
+
+    Only \\t and \\n survive among control characters; every other C0 code,
+    DEL, and the whole C1 control block (U+0080-U+009F) are dropped, because
+    they are the only route by which "paste text" could smuggle in "do
+    something else" — e.g. chr(0x9b) is the single-character form of "ESC [",
+    so leaving the C1 range untouched let a raw CSI sequence ride through the
+    C0-only filter. CR, CRLF, U+2028 LINE SEPARATOR, and U+2029 PARAGRAPH
+    SEPARATOR are all normalized to LF first: some renderer somewhere treats
+    either Unicode separator as a line break, so it must trip paste_session's
+    multi-line gate the same way an ordinary "\\n" does, rather than slip past
+    it disguised as "just another character". Lone surrogates (U+D800-U+DFFF)
+    go too: json.loads happily produces one from an escaped "\\ud800", and it
+    cannot be encoded to UTF-8, so an unsanitized surrogate raised an uncaught
+    UnicodeEncodeError out of the size check and killed the request with no
+    JSON response — the same contract break as lines:Infinity. Astral-plane
+    characters (emoji, CJK extensions) are NOT affected: they are a single
+    non-surrogate codepoint in Python, surrogate-paired only in UTF-16.
+    No other trimming happens here — leading and trailing whitespace is
+    preserved; only the caller's emptiness check uses .strip().
+    """
+    if not isinstance(text, str):
+        return ""
+    text = (text.replace("\r\n", "\n").replace("\r", "\n")
+                .replace(" ", "\n").replace(" ", "\n"))
+    return "".join(ch for ch in text
+                   if ch in "\t\n" or 0x20 <= ord(ch) < 0x7f
+                   or (ord(ch) > 0x9f and not 0xD800 <= ord(ch) <= 0xDFFF))
+
+def _delete_buffer(buf):
+    """Best-effort cleanup of a named paste buffer. Never raises: it runs on
+    failure paths, where a second failure must not mask the first."""
+    try:
+        subprocess.run([TMUX, "delete-buffer", "-b", buf],
+                       capture_output=True, text=True, timeout=8)
+    except Exception:
+        pass
+
+def paste_session(name, text, allow_multiline=False):
+    """Deliver phone-clipboard text into a session without ever pressing Return.
+
+    set-buffer + paste-buffer (never send-keys) means no Enter KEY is ever
+    sent by this code — sending a pasted command stays a human action,
+    always. That is NOT the same as guaranteeing the pane treats a newline
+    inside the pasted text as harmless data: `-p` (bracketed paste) only
+    brackets the payload so a program that has *negotiated* bracketed-paste
+    mode (a shell prompt, the Claude Code TUI) reads it as one paste event.
+    tmux does not verify that negotiation happened, and cannot even report it
+    (`#{pane_bracketed_paste}` is always empty), so a program that never
+    turned bracketed paste on — a REPL, a pager, anything doing a raw
+    terminal `read` — sees an embedded newline exactly as if Return had been
+    pressed there, and a multi-line paste can execute line-by-line. That is
+    why multi-line text requires an explicit `allow_multiline=True` opt-in:
+    single-line paste (the common case) is unaffected, multi-line only goes
+    through once the caller has confirmed the risk.
+
+    Each call gets its own uuid-suffixed buffer name (still deleted after via
+    `-d`) so two concurrent requests can never clobber one another's payload.
+    The payload goes in over `load-buffer -b <buf> -`'s STDIN, never as an
+    argv element: tmux's command-SEQUENCE parser treats a trailing ";" in an
+    argv value as a command separator — one layer above per-command getopt,
+    so a "--" end-of-options guard does NOT protect against it — and would
+    silently drop that character (measured: `set-buffer -- 'echo hi;'` stored
+    "echo hi", 7 bytes). Reading from stdin isn't parsed as tmux syntax at
+    all, so a leading "-", an embedded ";", or any other tmux-special
+    character in the pasted text survives byte-for-byte.
+
+    The SESSION NAME (not the pasted text) is rejected up front if it
+    contains ";", "\\n", or "\\r" — see capture_session's docstring for why:
+    the same command-sequence splitting that ate a trailing ";" in the
+    payload also lets `has-session -t "=work;"` validate a session that
+    isn't the one the pane command then targets.
+    """
+    if not name:
+        return {"ok": False, "error": "no session name"}
+    if _bad_session_name(name):
+        return {"ok": False, "error": "bad session name"}
+    # Cheap DoS guard before the expensive part: _sanitize_paste_text builds a
+    # per-character list over the WHOLE payload (measured: an 8 MB input peaked
+    # at ~75 MB traced memory before the exact byte check below ever ran).
+    #
+    # It is deliberately NOT set to PASTE_MAX_BYTES. Sanitizing only ever
+    # REMOVES characters, so a payload over the cap in raw characters can be
+    # under it in bytes afterwards — a CRLF clipboard payload (any Windows-
+    # origin document) at 8193 characters sanitizes to exactly 8192 bytes, and
+    # a guard at the cap rejected it as "too long" when it is not. AC-PCP-009
+    # puts the cap on the POST-sanitization byte count, so nothing short of
+    # sanitizing can decide it; this guard exists only to refuse the absurd.
+    if isinstance(text, str) and len(text) > PASTE_HARD_LIMIT:
+        return {"ok": False, "error": f"too long (max {PASTE_MAX_BYTES} bytes)"}
+    clean = _sanitize_paste_text(text)
+    if not clean.strip():
+        return {"ok": False, "error": "nothing to paste"}
+    if "\n" in clean and not allow_multiline:
+        return {"ok": False, "error": "multiline", "lines": len(clean.split("\n"))}
+    data = clean.encode("utf-8")
+    if len(data) > PASTE_MAX_BYTES:
+        return {"ok": False, "error": f"too long (max {PASTE_MAX_BYTES} bytes)"}
+    sess = f"={name}"
+    pane = f"={name}:"
+    buf = f"{PASTE_BUFFER}-{uuid.uuid4().hex}"
+    try:
+        if subprocess.run([TMUX, "has-session", "-t", sess],
+                          capture_output=True, text=True, timeout=8).returncode != 0:
+            return {"ok": False, "error": "no such session"}
+        sb = subprocess.run([TMUX, "load-buffer", "-b", buf, "-"], input=clean,
+                            capture_output=True, text=True, timeout=8)
+        if sb.returncode != 0:
+            # Completeness with the two paths below: tmux should not have set the
+            # buffer on a failed load, but the cleanup is free and this is the
+            # only branch that was missing it.
+            _delete_buffer(buf)
+            return {"ok": False, "error": (sb.stderr or sb.stdout).strip() or "paste failed"}
+        pb = subprocess.run([TMUX, "paste-buffer", "-p", "-d", "-b", buf, "-t", pane],
+                            capture_output=True, text=True, timeout=8)
+        if pb.returncode != 0:
+            # `-d` only deletes on success, and tmux exempts EXPLICITLY NAMED
+            # buffers from `buffer-limit` — so without this, every failed paste
+            # (dropped Wi-Fi mid-request, session killed after has-session,
+            # paste-buffer timing out) would strand a named <=8 KB buffer that
+            # the server never evicts, for the life of that tmux server.
+            _delete_buffer(buf)
+            return {"ok": False, "error": (pb.stderr or pb.stdout).strip() or "paste failed"}
+    except Exception as e:
+        _delete_buffer(buf)
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "bytes": len(data)}
 
 def list_dir(path):
     path = os.path.realpath(path or workspace_roots()[0])
@@ -594,12 +801,25 @@ iframe{border:0;width:100%;height:100%;display:block}
   text-decoration:none;-webkit-tap-highlight-color:transparent}
 #back:active{background:rgba(46,42,39,.92)}
 #back .a{font-size:17px;line-height:1}
+/* Right-edge rail: scroll triad + copy/paste pair are ONE vertically-centred
+   flex column so the whole stack centres as a unit (fixes a landscape-phone
+   clipping bug: #tools positioned independently at "50% + 84px" could hang
+   past the bottom of a short viewport with no room left to reach it). The
+   22px gap between the two inner groups is what keeps them reading as two
+   separate clusters rather than one long rail. */
+/* pointer-events:none on the rail, auto on the buttons: the 22px separator gap
+   between the two groups is INSIDE this box, so without it that strip becomes a
+   dead zone that swallows taps meant for the terminal underneath. */
+#rail{position:fixed;right:calc(8px + env(safe-area-inset-right));top:50%;transform:translateY(-50%);
+  z-index:10;display:flex;flex-direction:column;gap:22px;pointer-events:none}
+#rail button{pointer-events:auto}
+/* A disabled control must LOOK disabled — the copy button greys out while its
+   capture is in flight instead of looking tappable and doing nothing. */
+#tools button:disabled{opacity:.45}
 /* Scroll controls. A ttyd terminal can't be swiped to scroll on a phone, so
-   these drive tmux copy-mode server-side (POST /api/scroll). Right-edge,
-   vertically centred, same semi-transparent pill language as #back so they
-   don't obscure the terminal. Touch targets are 46px. */
-#scroll{position:fixed;right:calc(8px + env(safe-area-inset-right));top:50%;transform:translateY(-50%);
-  z-index:10;display:flex;flex-direction:column;gap:8px}
+   these drive tmux copy-mode server-side (POST /api/scroll). Same
+   semi-transparent pill language as #back. Touch targets are 46px. */
+#scroll{display:flex;flex-direction:column;gap:8px}
 #scroll button{width:46px;height:46px;border-radius:23px;border:1px solid #2e2a27;
   background:rgba(26,24,23,.82);backdrop-filter:blur(8px);color:#efe9e2;font-size:20px;line-height:1;
   display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent;cursor:pointer}
@@ -617,14 +837,94 @@ iframe{border:0;width:100%;height:100%;display:block}
 #hint b{color:#e0556a}
 #hintx{flex:0 0 auto;background:#e0556a;color:#fff;border:none;border-radius:10px;padding:9px 13px;font:600 13px/1 inherit}
 #hintx:active{background:#c53b52}
+/* Copy/Paste tools: a second pill group, positioned by the shared #rail
+   parent (see above) so it centres together with the scroll triad instead of
+   independently. Same semi-transparent pill language as #scroll/#back — text
+   labels here (not icons) because a glyph for "copy to phone clipboard via
+   the server" has no obvious symbol. */
+#tools{display:flex;flex-direction:column;gap:8px}
+#tools button{width:46px;height:46px;border-radius:23px;border:1px solid #2e2a27;
+  background:rgba(26,24,23,.82);backdrop-filter:blur(8px);color:#efe9e2;
+  font-size:10px;font-weight:700;letter-spacing:.3px;line-height:1;
+  display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent;cursor:pointer}
+#tools button:active{background:rgba(46,42,39,.92)}
+/* Bottom sheets for Copy/Paste. The element type is load-bearing on iOS:
+   READ-ONLY text must be a <pre> (a readonly form control cannot be tapped
+   into or long-pressed on iOS Safari — that shipped, and made the copy sheet
+   unselectable on a phone), while the PASTE field must be a real editable
+   <textarea>, since that is what makes iOS offer "Paste" on long-press. */
+#sheetbg{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:19;opacity:0;pointer-events:none;transition:opacity .25s}
+#sheetbg.open{opacity:1;pointer-events:auto}
+.toolsheet{position:fixed;left:0;right:0;bottom:0;z-index:20;max-width:560px;margin:0 auto;
+  max-height:70vh;overflow:auto;background:rgba(26,24,23,.97);border:1px solid #2e2a27;
+  border-radius:16px 16px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom));
+  color:#efe9e2;font:14px/1.5 -apple-system,system-ui,sans-serif;
+  opacity:0;transform:translateY(100%);pointer-events:none;transition:opacity .25s,transform .25s}
+.toolsheet.open{opacity:1;transform:translateY(0);pointer-events:auto}
+.toolsheet label{display:block;font-size:12.5px;color:#9a8f84;font-weight:600;margin-bottom:6px}
+/* Read-only captured text is a <pre>, NOT a readonly <textarea>: iOS Safari
+   will not let a finger tap into or long-press a readonly form control, which
+   made the copy sheet unselectable on the exact device it exists for. Ordinary
+   text in a block gets the native selection callout. */
+.toolsheet pre{width:100%;min-height:38vh;max-height:52vh;overflow:auto;-webkit-overflow-scrolling:touch;
+  background:#0f0e0d;color:#efe9e2;border:1px solid #2e2a27;border-radius:10px;padding:10px;
+  box-sizing:border-box;margin:0;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;
+  -webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
+.toolsheet .tslabel{display:block;font-size:12.5px;color:#9a8f84;font-weight:600;margin-bottom:6px}
+.toolsheet textarea{width:100%;min-height:38vh;background:#0f0e0d;color:#efe9e2;
+  border:1px solid #2e2a27;border-radius:10px;padding:10px;box-sizing:border-box;
+  font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  -webkit-user-select:text;user-select:text;resize:vertical}
+.toolsheet p{min-height:1.2em;font-size:12.5px;color:#9a8f84;margin:8px 0}
+.tsbtn{display:block;width:100%;padding:12px;border-radius:12px;font:600 14px/1 inherit;
+  border:none;margin-top:8px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+/* Accent bg is #c53b52 (the existing accent-PRESSED token), not resting
+   #e0556a — computed contrast vs #fff text is 3.70:1 for #e0556a (fails AA's
+   4.5:1 for this 14px button text) but 5.10:1 for #c53b52 (passes). Reusing
+   an already-on-brand token keeps this a palette swap, not a new color. */
+.tsbtn.accent{background:#c53b52;color:#fff}
+.tsbtn.accent:active{filter:brightness(.85)}
+.tsbtn.sec{background:transparent;color:#efe9e2;border:1px solid #2e2a27}
+.tsbtn.sec:active{background:rgba(46,42,39,.92)}
+/* .tsbtn sets display:block, which (same author-origin, same specificity as
+   the browser's own [hidden] rule) would otherwise win the cascade and keep
+   a hidden confirm button visible — so this override is required, not
+   decorative. */
+#pasteconfirm[hidden]{display:none}
+@media (prefers-reduced-motion: reduce){
+  #sheetbg,.toolsheet{transition:none}
+}
 </style>
 </head><body>
 <a id="back" href="/" aria-label="Back to sessions"><span class="a">‹</span>Sessions</a>
 <iframe id="t" src="__SRC__" allow="clipboard-read;clipboard-write"></iframe>
+<div id="rail">
 <div id="scroll">
   <button data-d="up" aria-label="Scroll up">▲</button>
   <button data-d="live" class="live" aria-label="Jump to live">LIVE</button>
   <button data-d="down" aria-label="Scroll down">▼</button>
+</div>
+<div id="tools">
+  <button id="btncopy" aria-label="Copy text from this session">COPY</button>
+  <button id="btnpaste" aria-label="Paste text into this session">PASTE</button>
+</div>
+</div>
+<div id="sheetbg"></div>
+<div id="copysheet" class="toolsheet">
+  <span class="tslabel">Last 200 lines</span>
+  <pre id="copytext" tabindex="0"></pre>
+  <p id="copystatus"></p>
+  <button id="copyall" class="tsbtn accent">Copy all</button>
+  <button id="copyclose" class="tsbtn sec">Close</button>
+</div>
+<div id="pastesheet" class="toolsheet">
+  <label for="pastetext">Paste here, then send</label>
+  <textarea id="pastetext"></textarea>
+  <p id="pastestatus"></p>
+  <button id="pastesend" class="tsbtn accent">Send to terminal</button>
+  <button id="pasteconfirm" class="tsbtn accent" hidden>Send anyway</button>
+  <button id="pastecancel" class="tsbtn sec">Cancel</button>
 </div>
 <div id="hint"><span>✦ Your session is live. Keep working right here in the terminal, or carry it on from the <b>Claude app</b> on your phone or computer — it's the same session, wherever you pick it up.</span><button id="hintx">Got it</button></div>
 <script>
@@ -644,6 +944,101 @@ iframe{border:0;width:100%;height:100%;display:block}
       body:JSON.stringify({name:SESS,dir:b.dataset.d})}).catch(function(){});
   });
 })();
+// Copy/Paste sheets: same server-mediated model as scroll above — the
+// browser clipboard API is unavailable on this plain-HTTP origin, so Copy
+// reads via /api/capture into a <pre> the finger can actually select, and
+// Paste writes via /api/paste. Never sends Enter — sending stays a human tap.
+(function(){
+  var SESS=__NAME__;
+  var bg=document.getElementById('sheetbg');
+  var copysheet=document.getElementById('copysheet'), pastesheet=document.getElementById('pastesheet');
+  var btncopy=document.getElementById('btncopy'), btnpaste=document.getElementById('btnpaste');
+  if(!SESS||!bg||!copysheet||!pastesheet)return;
+  function openSheet(s){bg.classList.add('open');s.classList.add('open')}
+  function closeSheet(s){bg.classList.remove('open');s.classList.remove('open')}
+  bg.addEventListener('click',function(){closeSheet(copysheet);closeSheet(pastesheet)});
+
+  var copytext=document.getElementById('copytext'), copystatus=document.getElementById('copystatus');
+  btncopy&&btncopy.addEventListener('click',function(){
+    openSheet(copysheet);
+    // The guard stops a slow first response overwriting a newer one. It must
+    // never outlive the request: without the abort, a phone that drops Wi-Fi
+    // mid-capture left the ONLY opener for this sheet dead until the browser's
+    // own ~60s timeout, which is worse than the stale render it prevents.
+    btncopy.disabled=true;
+    var ctl=('AbortController' in window)?new AbortController():null;
+    var giveUp=setTimeout(function(){ctl&&ctl.abort()},15000);
+    copytext.textContent='';copystatus.textContent='Reading session…';
+    fetch('/api/capture',{method:'POST',headers:{'content-type':'application/json'},
+      signal:ctl?ctl.signal:undefined,
+      body:JSON.stringify({name:SESS})})
+      .then(function(x){return x.json()})
+      .then(function(r){
+        if(!r.ok){copystatus.textContent=r.error||'Could not read session.';return}
+        copytext.textContent=r.text||'';
+        copystatus.textContent=!r.text?'This session has no output yet.'
+          :(r.truncated?'Showing the most recent output (truncated).':'');
+      })
+      .catch(function(){copystatus.textContent="Couldn't reach the Mac."})
+      .finally(function(){clearTimeout(giveUp);btncopy.disabled=false});
+  });
+  document.getElementById('copyclose').addEventListener('click',function(){closeSheet(copysheet)});
+  document.getElementById('copyall').addEventListener('click',function(){
+    // The capture may still be in flight: copying now would put an empty string
+    // on the clipboard and cheerfully report success.
+    if(btncopy.disabled){copystatus.textContent='Still reading the session…';return}
+    var txt=copytext.textContent||'';
+    if(!txt){copystatus.textContent='Nothing to copy yet.';return}
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(txt).then(function(){
+        copystatus.textContent='Copied ✓';
+      }).catch(function(){execFallback()});
+    }else{execFallback()}
+    // A <pre> is not a form control, so there is no setSelectionRange: select
+    // its contents with a Range, which is also what leaves the text visibly
+    // highlighted if the copy is refused and the user has to do it by hand.
+    function execFallback(){
+      var ok=false;
+      try{
+        var rng=document.createRange();rng.selectNodeContents(copytext);
+        var sel=window.getSelection();sel.removeAllRanges();sel.addRange(rng);
+        ok=document.execCommand('copy');
+      }catch(e){ok=false}
+      copystatus.textContent=ok?'Copied ✓':"Couldn't copy automatically — the text is selected, tap Copy.";
+    }
+  });
+
+  var pastetext=document.getElementById('pastetext'), pastestatus=document.getElementById('pastestatus');
+  var pasteconfirm=document.getElementById('pasteconfirm');
+  btnpaste&&btnpaste.addEventListener('click',function(){
+    openSheet(pastesheet);pastestatus.textContent='';pasteconfirm.hidden=true;
+  });
+  document.getElementById('pastecancel').addEventListener('click',function(){closeSheet(pastesheet)});
+  // A stale "Send anyway" must never apply to different text than the one it
+  // was raised for, so any edit re-hides it — the next send re-checks fresh.
+  pastetext.addEventListener('input',function(){pasteconfirm.hidden=true});
+  // Multi-line text is only ever bracketed-paste-safe if the pane's
+  // foreground program negotiated that mode, which tmux can't confirm — see
+  // paste_session()'s docstring. So a plain "no such session"/"too long"
+  // error and a "this looks risky, still send it?" confirmation are two
+  // different UI states, not the same failure path.
+  function doPaste(multiline){
+    var btn=document.getElementById('pastesend');
+    btn.disabled=true;pasteconfirm.disabled=true;btn.textContent='Sending…';pastestatus.textContent='';
+    fetch('/api/paste',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({name:SESS,text:pastetext.value,multiline:!!multiline})})
+      .then(function(x){return x.json()})
+      .then(function(r){
+        if(r.ok){pastetext.value='';pasteconfirm.hidden=true;closeSheet(pastesheet)}
+        else if(r.error==='multiline'){pasteconfirm.hidden=false;pastestatus.textContent='This is '+(r.lines||'several')+' lines. If this session isn\\'t at a Claude or shell prompt, each line may run as a command. Send anyway?'}
+        else{pastestatus.textContent=r.error||'Could not paste.'}
+      })
+      .catch(function(){pastestatus.textContent="Couldn't reach the Mac."})
+      .finally(function(){btn.disabled=false;pasteconfirm.disabled=false;btn.textContent='Send to terminal'});
+  }
+  document.getElementById('pastesend').addEventListener('click',function(){doPaste(false)});
+  pasteconfirm.addEventListener('click',function(){doPaste(true)});
+})();
 var f=document.getElementById('t'),away=0,last=0;
 // Every iframe reload makes ttyd spawn a fresh PTY, and ttyd 1.7.7 leaks the
 // descriptor. Reloading on blur/focus (which fire when you merely tap into the
@@ -660,12 +1055,81 @@ document.addEventListener('visibilitychange',function(){
 window.addEventListener('online',reconnect);
 </script></body></html>"""
 
+def _fill(template, fields):
+    """Substitute every __PLACEHOLDER__ in ONE pass.
+
+    Chained `.replace()` calls are the bug: a later placeholder can fire inside
+    an EARLIER substitution's output. That was a live XSS here — `urllib.parse.quote`
+    leaves "_" and alphanumerics unreserved, so a session named "__NAME__ ..."
+    survived percent-encoding into the iframe's src, and the later __NAME__ pass
+    then injected there, where the breakout character is json.dumps's own quote
+    rather than "<". A single re.sub cannot rescan what it just emitted, so no
+    ordering of the fields can reintroduce it. The lambda matters too: a plain
+    replacement STRING would treat backslashes in the value as regex escapes,
+    which would corrupt the \\u003c sequences this is called with.
+    """
+    if not fields:
+        return template
+    pattern = "|".join(re.escape(k) for k in fields)
+    return re.sub(pattern, lambda mt: fields[mt.group(0)], template)
+
+def _js_value(value):
+    """Serialize a value for injection into an inline <script>.
+
+    json.dumps is a correct JS-VALUE encoder but not an HTML-context-safe one:
+    it leaves "<", ">" and "&" alone, and the HTML tokenizer ends a <script>
+    element on a literal "</script>" no matter what the JS parser would have
+    made of it. Escaping those three as JS unicode escapes keeps the value
+    identical to the JS engine while making "</script>" impossible to spell.
+    Every inline-script injection in this file goes through here — the XSS was
+    fixed once in term_page and stayed alive in the dashboard precisely because
+    the escaping lived at the call site instead of in one shared function.
+    """
+    return (json.dumps(value)
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026"))
+
+def dashboard_page(home, ws, aos):
+    """The session dashboard.
+
+    Both value sinks are writable, so this is a real stored-XSS surface rather
+    than only hardening: WORKSPACE_ROOT comes from portal.env (writable through
+    POST /api/write, and unlike workspace_roots() this path applies no isdir
+    check), and the default cwd comes from POST /api/default-cwd, where
+    os.path.realpath() passes markup through untouched. Stored rather than
+    reflected — it needs one prior write — but it then fires on every load of
+    the page the user opens each session.
+    """
+    return _fill(PAGE, {"__HOME__": _js_value(home),
+                        "__WS__": _js_value(ws),
+                        "__AOS__": _js_value(aos)})
+
 def term_page(name):
     src = f"http://{TSIP}:{TTYD_PORT}/?arg={urllib.parse.quote(name or '', safe='')}"
-    return (TERM_PAGE
-            .replace("__SRC__", html.escape(src, quote=True))
-            .replace("__TITLE__", html.escape(name or "Session"))
-            .replace("__NAME__", json.dumps(name or "")))
+    # S5 / AC-PCP-016 (pre-existing XSS, fixed under an approved scope
+    # extension — see spec.md Amendment A3): json.dumps() is a correct
+    # JS-STRING encoder (it escapes quotes/backslashes so the JS literal
+    # itself holds), but it does NOT escape "<", ">", or "&", and the HTML
+    # tokenizer ends a <script> element on a literal "</script>" regardless
+    # of what the JS parser would have made of it. /term reads `s` straight
+    # from the query string with no has-session check, so this value is
+    # fully attacker-controlled by URL. Escaping these three characters as
+    # JS unicode escapes keeps the substitution a valid JS string literal in
+    # every context while making "</script>" impossible to spell here.
+    name_js = _js_value(name or "")
+    # ONE pass, not three chained .replace() calls. Sequential substitution let
+    # the LAST replacement fire inside text an EARLIER one had produced:
+    # urllib.parse.quote leaves "_" and alphanumerics unreserved, so a session
+    # named "__NAME__ onload=alert(1) x=" survived percent-encoding into the
+    # iframe's src, and the later __NAME__ pass then injected json.dumps output
+    # there — whose own opening quote closes the src attribute and lets the
+    # remainder parse as fresh attributes. Escaping "<" cannot help in an
+    # attribute context. A single re.sub cannot rescan its own output, so no
+    # ordering of the three placeholders can reintroduce this.
+    return _fill(TERM_PAGE, {"__SRC__": html.escape(src, quote=True),
+                             "__TITLE__": html.escape(name or "Session"),
+                             "__NAME__": name_js})
 
 class H(BaseHTTPRequestHandler):
     def _auth(self):
@@ -694,7 +1158,15 @@ class H(BaseHTTPRequestHandler):
 
     def _body(self):
         n = int(self.headers.get("content-length", 0))
-        return json.loads(self.rfile.read(n) or b"{}")
+        b = json.loads(self.rfile.read(n) or b"{}")
+        # Every handler below does b.get(...), which is called OUTSIDE do_POST's
+        # try — so a body that parses to a list/null/string/number raised
+        # AttributeError and dropped the connection with zero bytes of response.
+        # Raising here routes it into the existing "bad body" 400 instead, so
+        # malformed input always comes back as JSON rather than a dead socket.
+        if not isinstance(b, dict):
+            raise ValueError("body must be a JSON object")
+        return b
 
     def log_message(self, *a):
         pass
@@ -716,10 +1188,7 @@ class H(BaseHTTPRequestHandler):
             if not os.path.isdir(aos):
                 dc = get_default_cwd()
                 aos = dc if dc and dc != HOME else ws
-            page = (PAGE.replace("__HOME__", json.dumps(HOME))
-                        .replace("__WS__", json.dumps(ws))
-                        .replace("__AOS__", json.dumps(aos)))
-            body = page.encode()
+            body = dashboard_page(HOME, ws, aos).encode()
             self.send_response(200)
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("content-length", str(len(body)))
@@ -767,6 +1236,10 @@ class H(BaseHTTPRequestHandler):
             self._json(kill_session(b.get("name", "")))
         elif u.path == "/api/scroll":
             self._json(scroll_session(b.get("name", ""), b.get("dir", "")))
+        elif u.path == "/api/capture":
+            self._json(capture_session(b.get("name", ""), b.get("lines")))
+        elif u.path == "/api/paste":
+            self._json(paste_session(b.get("name", ""), b.get("text", ""), bool(b.get("multiline"))))
         elif u.path == "/api/write":
             self._json(write_file(b.get("path", ""), b.get("content", "")))
         else:
