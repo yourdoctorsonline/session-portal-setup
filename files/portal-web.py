@@ -909,9 +909,11 @@ iframe{border:0;width:100%;height:100%;display:block}
   font-size:10px;font-weight:700;letter-spacing:.3px;line-height:1;
   display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent;cursor:pointer}
 #tools button:active{background:rgba(46,42,39,.92)}
-/* Bottom sheets for Copy/Paste. A real <textarea> (not a <pre>/<span>) is the
-   whole point: it's what unlocks native iOS long-press selection for Copy,
-   and native "Paste" offer for Paste. */
+/* Bottom sheets for Copy/Paste. The element type is load-bearing on iOS:
+   READ-ONLY text must be a <pre> (a readonly form control cannot be tapped
+   into or long-pressed on iOS Safari — that shipped, and made the copy sheet
+   unselectable on a phone), while the PASTE field must be a real editable
+   <textarea>, since that is what makes iOS offer "Paste" on long-press. */
 #sheetbg{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:19;opacity:0;pointer-events:none;transition:opacity .25s}
 #sheetbg.open{opacity:1;pointer-events:auto}
 .toolsheet{position:fixed;left:0;right:0;bottom:0;z-index:20;max-width:560px;margin:0 auto;
@@ -921,6 +923,16 @@ iframe{border:0;width:100%;height:100%;display:block}
   opacity:0;transform:translateY(100%);pointer-events:none;transition:opacity .25s,transform .25s}
 .toolsheet.open{opacity:1;transform:translateY(0);pointer-events:auto}
 .toolsheet label{display:block;font-size:12.5px;color:#9a8f84;font-weight:600;margin-bottom:6px}
+/* Read-only captured text is a <pre>, NOT a readonly <textarea>: iOS Safari
+   will not let a finger tap into or long-press a readonly form control, which
+   made the copy sheet unselectable on the exact device it exists for. Ordinary
+   text in a block gets the native selection callout. */
+.toolsheet pre{width:100%;min-height:38vh;max-height:52vh;overflow:auto;-webkit-overflow-scrolling:touch;
+  background:#0f0e0d;color:#efe9e2;border:1px solid #2e2a27;border-radius:10px;padding:10px;
+  box-sizing:border-box;margin:0;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;
+  -webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
+.toolsheet .tslabel{display:block;font-size:12.5px;color:#9a8f84;font-weight:600;margin-bottom:6px}
 .toolsheet textarea{width:100%;min-height:38vh;background:#0f0e0d;color:#efe9e2;
   border:1px solid #2e2a27;border-radius:10px;padding:10px;box-sizing:border-box;
   font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -961,8 +973,8 @@ iframe{border:0;width:100%;height:100%;display:block}
 </div>
 <div id="sheetbg"></div>
 <div id="copysheet" class="toolsheet">
-  <label for="copytext">Last 200 lines</label>
-  <textarea id="copytext" readonly></textarea>
+  <span class="tslabel">Last 200 lines</span>
+  <pre id="copytext" tabindex="0"></pre>
   <p id="copystatus"></p>
   <button id="copyall" class="tsbtn accent">Copy all</button>
   <button id="copyclose" class="tsbtn sec">Close</button>
@@ -995,7 +1007,7 @@ iframe{border:0;width:100%;height:100%;display:block}
 })();
 // Copy/Paste sheets: same server-mediated model as scroll above — the
 // browser clipboard API is unavailable on this plain-HTTP origin, so Copy
-// reads via /api/capture into a real (long-press-selectable) textarea, and
+// reads via /api/capture into a <pre> the finger can actually select, and
 // Paste writes via /api/paste. Never sends Enter — sending stays a human tap.
 (function(){
   var SESS=__NAME__;
@@ -1017,14 +1029,14 @@ iframe{border:0;width:100%;height:100%;display:block}
     btncopy.disabled=true;
     var ctl=('AbortController' in window)?new AbortController():null;
     var giveUp=setTimeout(function(){ctl&&ctl.abort()},15000);
-    copytext.value='';copystatus.textContent='Reading session…';
+    copytext.textContent='';copystatus.textContent='Reading session…';
     fetch('/api/capture',{method:'POST',headers:{'content-type':'application/json'},
       signal:ctl?ctl.signal:undefined,
       body:JSON.stringify({name:SESS})})
       .then(function(x){return x.json()})
       .then(function(r){
         if(!r.ok){copystatus.textContent=r.error||'Could not read session.';return}
-        copytext.value=r.text||'';
+        copytext.textContent=r.text||'';
         copystatus.textContent=!r.text?'This session has no output yet.'
           :(r.truncated?'Showing the most recent output (truncated).':'');
       })
@@ -1036,19 +1048,24 @@ iframe{border:0;width:100%;height:100%;display:block}
     // The capture may still be in flight: copying now would put an empty string
     // on the clipboard and cheerfully report success.
     if(btncopy.disabled){copystatus.textContent='Still reading the session…';return}
+    var txt=copytext.textContent||'';
+    if(!txt){copystatus.textContent='Nothing to copy yet.';return}
     if(navigator.clipboard&&navigator.clipboard.writeText){
-      navigator.clipboard.writeText(copytext.value).then(function(){
+      navigator.clipboard.writeText(txt).then(function(){
         copystatus.textContent='Copied ✓';
       }).catch(function(){execFallback()});
     }else{execFallback()}
+    // A <pre> is not a form control, so there is no setSelectionRange: select
+    // its contents with a Range, which is also what leaves the text visibly
+    // highlighted if the copy is refused and the user has to do it by hand.
     function execFallback(){
       var ok=false;
       try{
-        copytext.readOnly=false;copytext.focus();copytext.setSelectionRange(0,copytext.value.length);
+        var rng=document.createRange();rng.selectNodeContents(copytext);
+        var sel=window.getSelection();sel.removeAllRanges();sel.addRange(rng);
         ok=document.execCommand('copy');
       }catch(e){ok=false}
-      copytext.readOnly=true;
-      copystatus.textContent=ok?'Copied ✓':"Couldn't copy automatically — long-press the text and tap Copy.";
+      copystatus.textContent=ok?'Copied ✓':"Couldn't copy automatically — the text is selected, tap Copy.";
     }
   });
 
