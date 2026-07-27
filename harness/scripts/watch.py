@@ -500,7 +500,15 @@ def verify(session=None, strict=False, data=None):
     if not path or not os.path.exists(path):
         print("watch: no session ledger found (hooks not wired or nothing captured yet)")
         print("VERDICT: UNVERIFIABLE")
-        return 0
+        # Exit 2, not 0: a layer-0 check that could not run must not report success —
+        # the conductor records UNVERIFIABLE, which blocks the ship gate (laws.md
+        # Corollary; run 2026-07-26_verdict-split-unverifiable, AC-VSU-009). Before this,
+        # `verify` printed UNVERIFIABLE and returned 0, so nothing objected when the
+        # verdict was written into the ledger as SKIP — measured 6 times across 2 repos.
+        # 2 rather than 1 keeps "could not run" distinguishable from 1 = "caught a lie"
+        # (the `high and strict` path below). stop_hook() discards this return and always
+        # exits 0, so no session can be bricked by it.
+        return 2
     events = _load_events(path)
     flags, checks = verify_events(events)
     n_actions = sum(1 for e in events if e.get("type") == "action")

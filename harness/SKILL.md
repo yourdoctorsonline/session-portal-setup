@@ -119,7 +119,10 @@ Layer 0 said-vs-did (`scripts/watch.py verify` against the action ledger), Layer
 mechanical (zero-trust-verification), Layer 2 adversarial review (Do-Not-Trust-the-
 Report reviewers + quote gate, two verdicts per task), Layer 3 runtime (drive the
 real app; screenshots). Record each layer's verdict:
-`scripts/ledger.sh append <run> verify:<layer> <PASS|FAIL>`.
+`scripts/ledger.sh append <run> verify:<layer> <PASS|FAIL|SKIP|UNVERIFIABLE>`.
+`UNVERIFIABLE` = the check could not run; it BLOCKS the ship gate exactly like FAIL. `SKIP`
+is legal on `verify:runtime` only, and only with a note naming the absent surface — every
+other required phase blocks on it. Full rules in `references/05-verify.md`.
 
 ## Step 6: Ship
 
@@ -154,9 +157,17 @@ Close the run (`run.md` status: complete). Ask: "How did this land? Any adjustme
   never block a session; deterministic REJECTs (zero-trust, check-plan-refs,
   ledger check) DO stop the pipeline. Revisit blocking Stop-hook after 2 weeks of
   false-positive data.
-- 2026-07-06: All watcher/gate scripts are fail-open: an error in the gate
-  infrastructure must never brick a session or block a deploy. A gate that fails
-  to run reports `unverifiable`, not FAIL.
+- 2026-07-06 (amended 2026-07-26): Gate scripts fail open on PROCESS, closed on
+  VERDICT. **Process:** an error inside gate infrastructure must never crash, hang, or
+  brick a session — catch it, report it, no traceback. **Verdict:** a gate that could
+  not run must never emit a passing exit code; it reports `UNVERIFIABLE`, which blocks
+  the ship gate exactly as FAIL does. The original wording ("reports `unverifiable`,
+  not FAIL" alongside "must never block a deploy") became self-contradictory the moment
+  UNVERIFIABLE became a blocking verdict — "the infrastructure wasn't there" is not a
+  pass. Session-lifecycle hooks are the exemption and always exit 0 (`watch.py
+  stop-hook`, `watch.py capture`): they must never brick a session. Reference
+  implementations: `check-plan-refs.sh` and `ledger.sh check`. Proof:
+  `scripts/test_gates.py`.
 - 2026-07-09: Spawn topology — the depth-0 controller does all subagent spawning;
   implementers/reviewers are depth-1 and can't spawn further (Claude Code hard
   limit). Never instruct a subagent to spawn its own QA/reviewer — it silently
@@ -185,6 +196,24 @@ Close the run (`run.md` status: complete). Ask: "How did this land? Any adjustme
   cut a build" release included. Review has repeatedly found defects that green
   tests missed (canonical case: 9 found, some safety-critical, behind 258 passing
   tests). Promoted by tripwire (recurred 6 days).
+- 2026-07-26: A check that cannot fail is not a check. Every assertion — in a test OR
+  in a verification script — must be shown to fail when the property it checks is
+  false. Any spy/capture needs an explicit vacuity guard that FAILS when it captured
+  nothing, and a string assertion must not span a source line wrap. Promoted by
+  tripwire (recurred 3+ dates in 3 disguises: a bounds check reading the constant it
+  guards; a guard test that never ran the guard; a runtime spy wired to the wrong
+  method so three assertions passed against the empty string). The same session then
+  hit the wrap-brittleness case twice more while fixing it.
+- 2026-07-26: A dispatched reviewer that has not returned is UNRUN, not passed — and a
+  SLOW reviewer is not a dead one. Wait, or state the wait, before concluding a gate
+  produced nothing. Record which lenses actually ran, and never report criteria
+  coverage as if it were an adversarial reference. Origin: 3 of 4 reviewers plus all 3
+  re-dispatches were declared non-delivering; all 6 returned late, the seeded control
+  scored 9/9, and the run shipped a real AC bypass in the gap it left.
+- 2026-07-26: Merged is not deployed, and deployed is not enabled. Before reporting any
+  change as live, verify the three separately against the running system: the merge, the
+  deployed artifact, and the feature flag / env var. Origin: a swap merged to main while
+  the live service still ran pre-swap code with the flag unset — three gates, one done.
 - 2026-07-19: Every run needs at least one REAL runtime proof — real model, real
   device or client, past-CDN origin check. Unit and mock evidence is structurally
   blind to model/contract bugs; a small runtime fix pass beats a clean skip.

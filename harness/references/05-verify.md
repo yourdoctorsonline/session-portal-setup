@@ -1,8 +1,20 @@
 # Phase 5 — Verify: four stacked layers
 
-Each layer catches what the previous one structurally cannot. Run all four (skip
-with `[SKIP] — reason` only where a layer has no surface, e.g. no UI → no visual
-runtime pass). Record every layer in the ledger.
+Each layer catches what the previous one structurally cannot. Run all four. Record every
+layer in the ledger.
+
+**`SKIP` and `UNVERIFIABLE` are different verdicts and the ship gate treats them differently.**
+`SKIP` means NO SURFACE EXISTS to check — no UI → no visual runtime pass — and must name the
+absent surface. `UNVERIFIABLE` means the check COULD NOT RUN: hooks not wired, tooling absent,
+no baseline. A capability gap is never a SKIP, and `ledger.sh check` blocks on UNVERIFIABLE
+exactly as it blocks on FAIL (laws.md § Corollary).
+
+The skip policy is an **allow-list**, not a deny-list: `verify:runtime` is the ONLY phase that may be
+SKIPped, and only with a note naming the absent surface. Every other required phase — `spec`, `plan`,
+`verify:watch`, `verify:zerotrust`, `verify:review` — blocks on SKIP. (It was a deny-list for one
+commit; review found that `spec` and `plan` had been left exempt by omission, so a run with no
+approved spec shipped by writing SKIP. A deny-list silently exempts whatever nobody remembered to
+add.)
 
 ## Layer 0 — Said-vs-did (the action ledger)
 
@@ -16,8 +28,11 @@ pass" when no test command ran; a test that ran red narrated as green; claimed
 commits that never happened. v1 is warn-mode — a HIGH flag doesn't block the
 session, but it DOES block this phase: treat any HIGH flag as a FAIL, produce the
 missing evidence (actually run the thing), and re-verify.
-If no session file exists (hooks not wired), mark `[SKIP] — watcher not installed`
-and rely on Layers 1–3.
+If no session file exists, `watch.py verify` prints `VERDICT: UNVERIFIABLE` and exits 2: the
+check could not run because hooks are not wired. Record it as exactly that —
+`ledger.sh append <run-slug> verify:watch UNVERIFIABLE "hooks not wired in this repo"` — which
+BLOCKS the ship gate. It is not a skip, and Layers 1–3 do not substitute for it. Wire the hooks
+(a capability gap is fixed at intake — laws.md § Uniform application), then re-run.
 
 ## Layer 1 — Mechanical (zero-trust)
 
@@ -77,10 +92,13 @@ FAIL→PASS pair; two PASS rows hide the catch and make the ledger unfalsifiable
 quality record).
 
 ```bash
-bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> verify:watch  PASS|FAIL|SKIP "note"
-bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> verify:zerotrust PASS|FAIL|SKIP "note"
-bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> verify:review PASS|FAIL "rounds: N"
-bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> verify:runtime PASS|FAIL|SKIP "note"
+# SKIP is legal ONLY on verify:runtime, and only with a note naming the absent surface.
+bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> verify:watch  PASS|FAIL|UNVERIFIABLE "note"
+bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> verify:zerotrust PASS|FAIL|UNVERIFIABLE "note"
+bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> verify:review PASS|FAIL|UNVERIFIABLE "rounds: N"
+bash .claude/skills/eng-harness/scripts/ledger.sh append <run-slug> verify:runtime PASS|FAIL|SKIP|UNVERIFIABLE "note"
 ```
 
-All four recorded (PASS or justified SKIP) → NEXT: `references/06-ship.md`
+All four recorded, none of them UNVERIFIABLE → NEXT: `references/06-ship.md`
+(`verify:runtime SKIP` with a note is the one permitted skip.) Prove it, don't assert it:
+`bash .claude/skills/eng-harness/scripts/ledger.sh check <run-slug>` must exit 0.

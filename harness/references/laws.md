@@ -68,6 +68,121 @@ Every checklist item in the run dir is either checked with evidence or marked
 Skipping a whole gate (e.g., no UI stage on a backend change) is fine — write the
 one-line reason.
 
+## The gate standard — two tests before anything counts as a gate
+
+Every check here is either **physics** (a command decides; the result is not negotiable) or **prose**
+(the conductor is asked to comply). Prose fails in one direction only: toward "done". Every gap
+measured in this harness on 2026-07-26 had that same sign: a watcher logging PASS while examining
+almost nothing, a ship gate accepting every layer being skipped, Lane B runs shipping on template
+plans, and the installer that wires the hooks printing "Setup complete." after failing to wire them.
+**Figures are deliberately not quoted here — they go stale within the day.** Re-derive them:
+`bash .eng-harness/runs/2026-07-26_gate-standard-law/measure.sh` (M1-M5; the snapshot it produced is
+committed beside it as `measure.out`). A new check is not a gate until it passes
+both tests below.
+
+### Test 1 — could a command decide this?
+
+If yes, it may not be a prompt. No exemption for "the protocol says so" or "the agent will remember".
+Anything checkable is a script or it is debt: artifact completeness, AC traceability, phase ordering,
+hook presence, quote resolution, coverage. **A rule whose enforcement depends on the cooperation of
+the party it constrains is honour-based however firmly it is worded** — that includes every law in
+this file, which is why the laws are backed by scripts rather than by their own severity.
+
+### Test 2 — for judgment: what is the reference, and what happens on a delta?
+
+Judgment gates (review, runtime, design taste) are measurable — but only when the
+criteria are committed BEFORE the gate runs. Four stages, all mechanical:
+
+1. **Pre-register** — derive criteria from the diff and the spec: every changed file, every in-scope
+   AC, every risk class the surface touches (auth, data loss, injection, error paths, idempotency,
+   concurrency). Generated, not authored.
+2. **Mark against each** — the gate returns a row per criterion, not a free-form list. Silence on a
+   criterion becomes a detectable absence instead of an invisible one.
+3. **Verify the evidence** — quote-gate every finding against the file, resolve every `file:line`,
+   confirm every cited AC exists. All grep.
+4. **Compare to a reference, then explain the delta.** A gate with no reference is not measured.
+
+References, cheapest first: **criteria coverage** (makes a bad gate visible) · **seeded defects**
+(inject N synthetic faults, score recall, strip before merge — per-run, cheap, adversarial) ·
+**mutation score** (already declared in `.zerotrust.json` at 80, inert for want of tooling) ·
+**escaped defects** (attributed back to the gate that missed them — slowest, truest).
+
+**Criteria-marking alone degrades into checkbox theatre** — a review can mark twelve criteria
+"examined, no issue" and be worthless, and the checker cannot tell. Every judgment gate needs at
+least one ADVERSARIAL reference.
+
+### Corollary — a check that could not run is not a check that passed
+
+`SKIP` means **no surface exists**, and must name the absent surface. Law 7's allowance for skipping a
+whole gate covers exactly that case — it was never a licence for a capability gap. A check that *could
+not run* (missing hooks, absent tooling, no baseline) is a different thing, and "the infrastructure
+wasn't there" is never a passing answer.
+
+**Status: ENFORCED since 2026-07-26** (run `verdict-split-unverifiable`). `ledger.sh` carries a fourth
+verdict, `UNVERIFIABLE`, and `check` blocks on it exactly as on FAIL. **Record a capability gap as
+UNVERIFIABLE** — never as SKIP, and no longer as FAIL. The skip policy is enforced in the script rather than
+merely documented, and as an **allow-list**: `verify:runtime` is the only phase that may be SKIPped,
+and only with a note naming the absent surface; every other required phase blocks on SKIP. The gate
+also refuses to run on data it cannot trust — an unparseable ledger row, or a missing `git` (which
+would stamp every row `commit:"none"` and make the staleness compare self-satisfying) both return
+UNVERIFIABLE, never PASS. `watch.py verify`
+exits non-zero when it finds no session ledger, so the verdict can no longer be quietly downgraded to
+SKIP on the way into the ledger. Re-derive the behaviour instead of trusting this paragraph:
+`python3 .claude/skills/eng-harness/scripts/test_gates.py` for the contract, and
+`bash .eng-harness/runs/2026-07-26_verdict-split-unverifiable/measure.sh` for the population it was
+sized against.
+
+Its companion, which is what makes the above hold under failure: gate scripts **fail open on process,
+closed on verdict** — never crash a session, never report success for a check that did not run. See
+SKILL.md rule 2026-07-06 (amended).
+
+### Pre-registration is not gate-specific
+
+Any open-ended work — audit, research, investigation, review — writes down what it will test BEFORE it
+starts. Without a pre-registered criteria set, coverage is unverifiable: the work may have been
+thorough, but nobody can tell what was *not* examined, which makes the work itself honour-based. **If
+the base assumptions do not exist, ask for them before starting** — never invent them silently.
+Discoveries are promoted, not absorbed: anything found mid-flight that was not in the pre-registered
+set becomes its own hypothesis with its own criteria and its own verifiable outcome. That promotion
+rule is load-bearing, not decoration — it is what stops the list from capping what gets found, since a
+criteria list treated as exhaustive is a blinker.
+
+Worked contrast, same day and same conductor: the harness audit ran open-ended and produced 15
+findings with **no defensible completeness claim** — nobody can say what went unchecked. The review
+bench pre-registered 14 defects in a sha-pinned file and produced "13/14, missing AC-005, right line
+wrong mechanism." Same effort, same care; only one is a result you can act on.
+
+### An honour-system check is a defect, not debt
+
+If a check turns out to run on trust, it is broken by definition: redo it, do not schedule it. Debt is
+deprioritised indefinitely; defects get fixed.
+
+**Law 5 carve-out.** If the trust-based check sits outside the current run's scope, do not fix it
+inline — that is scope creep, and Law 5 forbids it. Document it in the run dir and promote it to its
+own run before the session ends. "Defect, not debt" governs how it is *classified and queued*; it is
+never a licence to widen the diff you are already in.
+
+### Uniform application — no partial pipelines, no per-repo variation
+
+Every run in every repo executes the full pipeline. A repo where "some aspects aren't wired" is not a
+lighter-weight repo — it is a repo silently accumulating unverified flaws, and its output quality
+degrades with each one. **Proof never scales with stakes.** Lane *ceremony* (spec/plan depth) may
+scale, but only by the pre-declared gated rule in `01-intake.md`, and every lane — Lane A included —
+owes all four verify layers. A missing capability in the environment is a BLOCKING condition fixed at
+intake (see the Corollary above): never a lane, never a skip.
+
+Adversarial review is therefore always on, always emits proof (findings quote-resolved against the
+file, mapped to ACs, one row per pre-registered criterion), and **the conductor inspects the proof,
+not the summary.** A reviewer's report is a claim set; reading it is not verification. On 2026-07-26 a
+reviewer cited the correct line for a different mechanism — caught only because the quotes were
+checked against the source, and scored as a miss.
+
+### The criteria lists are never finished
+
+You cannot prove a criteria list complete; unknown unknowns are real. That is not a licence to keep
+prose gates — it makes each list a living artifact with its own loop: **every defect that escapes
+without a matching criterion becomes a new criterion.**
+
 ## Model routing (economy, not law)
 
 **The ceiling decides — not the domain, not the verb.** A 384-generation benchmark across

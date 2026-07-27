@@ -28,6 +28,39 @@ MERGE_RE = re.compile(
 def strip_quotes(cmd):
     return re.sub(r"'[^']*'|\"[^\"]*\"", " ", cmd)
 
+def _merge_repo_root(cmd, session_root):
+    """The git repo the merge command will actually run in.
+
+    Honours a leading `cd <dir>` in the command (the usual shape here), then asks
+    git for that directory's toplevel. Falls back to the session root on ANY
+    failure — this hook is a gate, and a gate that crashes must not brick a merge
+    (fail open on PROCESS; the VERDICT below still fails closed).
+    """
+    start = session_root
+    # Separators must include NEWLINE: real commands are multi-line and often open
+    # with `set -e\ncd <repo> && ...`. A first version matched only ^, && and ; and
+    # therefore silently fell back to the session root on exactly the shape it was
+    # written to handle — caught by the gate blocking a merge it should have allowed.
+    # Last match wins: the final `cd` before the merge is the effective directory.
+    cand = None
+    for m in re.finditer(
+        r"""(?:^|&&|\|\||;|\n)\s*cd\s+(?:'([^']+)'|"([^"]+)"|([^\s;&|]+))""", cmd):
+        got = os.path.expanduser(next(g for g in m.groups() if g))
+        if os.path.isdir(got):
+            cand = got
+    if cand:
+        start = cand
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=10, cwd=start)
+        top = r.stdout.strip()
+        if r.returncode == 0 and top and os.path.isdir(top):
+            return top
+    except Exception:
+        pass
+    return session_root
+
+
 def main():
     # Whole parse fail-open: ANY unexpected input allows (review finding 5).
     try:
@@ -40,7 +73,17 @@ def main():
     if not MERGE_RE.search(strip_quotes(cmd)):
         return 0
 
-    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    # Gate the repo being MERGED, not the session root.
+    #
+    # This used to be `CLAUDE_PROJECT_DIR or getcwd()` unconditionally, so a merge in
+    # repo B was gated on repo A's ACTIVE_RUN whenever the session happened to be
+    # rooted in A. Observed 2026-07-27: a P0 security merge in running-coach was
+    # blocked by an unrelated unfinished run in agentic-os. Two failure directions,
+    # both bad — it blocks merges it has no business blocking, and (worse) it would
+    # let a merge through in a repo whose own run is failing, because it never looked
+    # there. Same defect class as watch.py reading the wrong project dir.
+    session_root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    root = _merge_repo_root(cmd, session_root)
     active = os.path.join(root, ".eng-harness", "ACTIVE_RUN")
     if not os.path.isfile(active):
         return 0
@@ -55,9 +98,19 @@ def main():
     if not os.path.isfile(ledger):
         # Team-installer layout: the skill lives at the USER level, not vendored in
         # the project. Fall back there so the gate still enforces for teammates.
-        user_ledger = os.path.expanduser(
-            "~/.claude/skills/eng-harness/scripts/ledger.sh")
-        if os.path.isfile(user_ledger):
+        # Search the user-level installs in precedence order. CLAUDE_CONFIG_DIR wins
+        # (it is the config dir the session actually reads); ~/.claude is the team
+        # installer's target. Order matters: on a machine with both, the installer copy
+        # may be an OLDER harness, and gating with the wrong ledger.sh silently enforces
+        # the wrong rules. (2026-07-26.)
+        cands = []
+        ccd = os.environ.get("CLAUDE_CONFIG_DIR")
+        if ccd:
+            cands.append(os.path.join(ccd, "skills/eng-harness/scripts/ledger.sh"))
+        cands += [os.path.expanduser("~/.claude-personal/skills/eng-harness/scripts/ledger.sh"),
+                  os.path.expanduser("~/.claude/skills/eng-harness/scripts/ledger.sh")]
+        user_ledger = next((c for c in cands if os.path.isfile(c)), None)
+        if user_ledger:
             ledger = user_ledger
         else:
             print(f"merge-gate: ledger.sh missing (project + user) — allowing "

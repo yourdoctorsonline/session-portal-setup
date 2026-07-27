@@ -552,6 +552,84 @@ PY
   ' "$f"
 }
 
+# admin_rights_ok -> can this account get admin/root via sudo at all?
+# rc 0 = yes · rc 1 = no. Overridable for tests via SETUP_FAKE_ADMIN=1|0.
+#
+# This is a PRE-check, not an error handler. The Tailscale bring-up runs
+# `sudo … up || true` on purpose — that command legitimately "fails" while the
+# user finishes browser auth — so turning every non-zero into an error would
+# break the normal path. What was missing is the case that can NEVER succeed:
+# an account with no admin rights, which previously produced a silent sequence
+# of failed sudo calls and then advice about opening an app that isn't installed.
+admin_rights_ok() {
+  case "${SETUP_FAKE_ADMIN:-}" in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  case "${SETUP_FAKE_UNAME:-$(uname -s)}" in
+    Darwin) dseditgroup -o checkmember -m "$(whoami)" admin >/dev/null 2>&1 ;;
+    *)      id -nG 2>/dev/null | tr ' ' '\n' | grep -qx -e sudo -e admin -e wheel ;;
+  esac
+}
+
+# wslconf_install_ok SRC DST -> install SRC at DST, then VERIFY by reading DST
+# back. rc 0 only when DST's content actually matches SRC.
+# Test seam SETUP_FAKE_WSLCP: plain (ordinary cp) · fail (copy refuses) ·
+# noop (copy claims success and writes nothing).
+#
+# The read-back is the point. The old code ran `sudo cp` through a wrapper whose
+# status nobody checked and then printed "Almost there — one quick restart",
+# so a refused write reported success and every re-run repeated it identically.
+# A copy that exits 0 without landing is the same defect wearing a hat, which is
+# why success is defined as "the destination now reads like the source" rather
+# than "the copy command returned 0".
+wslconf_install_ok() {
+  local src="${1:-}" dst="${2:-}"
+  [ -n "$src" ] && [ -n "$dst" ] || return 1
+  # -s, not -f: an EMPTY source is never a valid wsl.conf, and copying it
+  # TRUNCATES the destination to zero bytes while the read-back cheerfully
+  # confirms the match — a guaranteed false success that also destroys the file.
+  # Reachable: wslconf_render's python3 branch returns 0 without checking
+  # python's exit status, so a failed render produces exactly this empty file.
+  [ -s "$src" ] || return 1
+  # Refuse a SYMLINKED destination. cp, chmod and the read-back all dereference,
+  # so a symlink means writing through it as root, chmod'ing the link target,
+  # and then verifying against the very file we were tricked into writing — the
+  # check would be structurally incapable of disagreeing with itself.
+  [ -L "$dst" ] && return 1
+  case "${SETUP_FAKE_WSLCP:-}" in
+    fail)  return 1 ;;
+    noop)  : ;;
+    plain) cp "$src" "$dst" 2>/dev/null || return 1 ;;
+    *)     sudo cp "$src" "$dst" 2>/dev/null || return 1
+           sudo chmod 644 "$dst" 2>/dev/null || true ;;
+  esac
+  # cmp, not string equality. `$( )` strips ALL trailing newlines from both
+  # sides, so "a=1\n" and "a=1\n\n\n\n" compared EQUAL and the read-back
+  # confirmed a file it had not written.
+  if [ -r "$dst" ]; then cmp -s "$src" "$dst" || return 1
+  else sudo cmp -s "$src" "$dst" 2>/dev/null || return 1; fi
+  return 0
+}
+
+# ensure_workspace_dir DIR -> make sure DIR exists and is writable.
+# rc 0 = usable · rc 1 = empty arg, or mkdir failed · rc 2 = exists, not writable.
+# Extracted from the STEP 6b call site so it can be tested at all: everything
+# below the sourcing guard is main flow and unreachable from test-setup.sh. The
+# caller MUST check the status — this script runs under `set -u` with no `set -e`,
+# so an unchecked failure here is what persisted a bad WORKSPACE_ROOT and then
+# printed "Saved your projects folder" anyway.
+ensure_workspace_dir() {
+  local d="${1:-}"
+  [ -n "$d" ] || return 1
+  if [ ! -d "$d" ]; then
+    mkdir -p "$d" 2>/dev/null || return 1
+  fi
+  [ -d "$d" ] || return 1
+  [ -w "$d" ] || return 2
+  return 0
+}
+
 # --- sourcing guard: the test harness stops here -----------------------------
 if [ "${SETUP_LIB_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
@@ -647,7 +725,7 @@ else
   else
     DL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/session-portal.XXXXXX")"
     trap 'rm -rf "$DL_DIR"' EXIT
-    if have curl && curl -fsSL "$REPO_URL" -o "$DL_DIR/main.tar.gz" 2>/dev/null \
+    if have curl && curl -fsSL --connect-timeout 15 --max-time 120 "$REPO_URL" -o "$DL_DIR/main.tar.gz" 2>/dev/null \
         && tar -xzf "$DL_DIR/main.tar.gz" -C "$DL_DIR" 2>/dev/null; then
       SRC="$DL_DIR/session-portal-setup-main"
     fi
@@ -699,7 +777,7 @@ if [ "$PLATFORM" = "mac" ]; then
       # Homebrew installer reads stdin it drains the rest of the script and bash then
       # exits silently at EOF (the "stops right after the tools step" bug). Detach it.
       env NONINTERACTIVE=1 /bin/bash -c \
-        "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null 2>&1 | sed 's/^/    /'
+        "$(curl -fsSL --connect-timeout 15 --max-time 120 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null 2>&1 | sed 's/^/    /'
       BREW="$(brew_bin)"; [ -n "$BREW" ] && break
       warn "Homebrew attempt $_a didn't land — retrying..."
       sleep 3
@@ -780,7 +858,7 @@ if preset_wants "$PRESET" signin; then
   else
     say "Installing Claude Code..."
     # </dev/null so the installer can't drain the piped script (see the Homebrew note).
-    /bin/bash -c "curl -fsSL https://claude.ai/install.sh | bash" </dev/null 2>&1 | sed 's/^/    /'
+    /bin/bash -c "curl -fsSL --connect-timeout 15 --max-time 120 https://claude.ai/install.sh | bash" </dev/null 2>&1 | sed 's/^/    /'
     case ":$PATH:" in
       *":$HOME/.local/bin:"*) : ;;
       *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
@@ -909,7 +987,7 @@ elif [ "$PLATFORM" = "wsl" ]; then
       say "DRYRUN: would install Tailscale (curl https://tailscale.com/install.sh | sh)"
     else
       # </dev/null so the installer can't drain the piped script (see the Homebrew note).
-      /bin/bash -c "curl -fsSL https://tailscale.com/install.sh | sh" </dev/null 2>&1 | sed 's/^/    /'
+      /bin/bash -c "curl -fsSL --connect-timeout 15 --max-time 120 https://tailscale.com/install.sh | sh" </dev/null 2>&1 | sed 's/^/    /'
     fi
   else
     ok "Tailscale already installed."
@@ -937,8 +1015,21 @@ elif [ "$PLATFORM" = "wsl" ]; then
       # world-readable perms (cp from a 0600 mktemp would otherwise leave wsl.conf unreadable).
       _WSLNEW="$(mktemp "${TMPDIR:-/tmp}/wslconf.XXXXXX")"
       wslconf_render "$_WSLCUR" > "$_WSLNEW"
-      run "enabling systemd in WSL (preserving existing config)" sudo cp "$_WSLNEW" /etc/wsl.conf
-      sudo chmod 644 /etc/wsl.conf 2>/dev/null || true
+      # Checked AND read back. This write used to be fire-and-forget: its status
+      # was discarded and the "Almost there" block below ran regardless, so a
+      # refused write reported success and every re-run repeated it identically.
+      say "  enabling systemd in WSL (preserving existing config)"
+      if wslconf_install_ok "$_WSLNEW" /etc/wsl.conf; then
+        ok "systemd enabled in /etc/wsl.conf"
+      else
+        warn "Couldn't write /etc/wsl.conf — systemd was NOT enabled."
+        say  "  Add these two lines to the end of /etc/wsl.conf yourself (needs admin),"
+        say  "  then re-run me:"
+        say  "    [boot]"
+        say  "    systemd=true"
+        rm -f "$_WSLCUR" "$_WSLNEW"
+        exit 1
+      fi
       rm -f "$_WSLCUR" "$_WSLNEW"
     fi
     say ""
@@ -958,6 +1049,15 @@ fi
 
 # Sign in / bring the connection up if we don't have an address yet.
 if [ -z "$(tsip)" ] && [ "${SETUP_DRYRUN:-0}" != "1" ]; then
+  # Everything below needs admin. Say so BEFORE the invisible password prompts:
+  # without this the sudo calls just fail one after another (they all end in
+  # `|| true`) and the user is left following recovery advice that cannot work.
+  if ! admin_rights_ok; then
+    warn "This account isn't an administrator, and Tailscale needs admin rights to start."
+    say  "  The password prompts below will not accept your password, however correct it is."
+    say  "  Ask whoever administers this machine to run this setup, or to grant you admin,"
+    say  "  then re-run me. Everything already done is kept — re-running is safe."
+  fi
   # Prefer the formula CLI (set just above on mac); fall back to whatever ts_bin resolves.
   TS_BIN="${TS_BIN:-}"; [ -n "$TS_BIN" ] || TS_BIN="$(ts_bin)"
   if [ "$PLATFORM" = "mac" ] && [ -n "$TS_BIN" ]; then
@@ -1157,8 +1257,14 @@ ask WSROOT "Where do your project folders live?" "${CUR_WS:-$HOME/repos}"
 # A typed "~/projects" arrives quoted from read — the shell won't expand it, so mkdir would
 # create a literal "~" directory. Expand a leading ~ ourselves.
 WSROOT="$(expand_home "$WSROOT")"
-run "creating $WSROOT" mkdir -p "$WSROOT"
-if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+if ! run "creating $WSROOT" ensure_workspace_dir "$WSROOT"; then
+  warn "Couldn't create $WSROOT — check the path and permissions, then re-run me."
+  say  "  Your projects folder was NOT saved, so nothing is left pointing at a bad path."
+  WSROOT=""
+fi
+if [ -z "$WSROOT" ]; then
+  :   # creation failed above; the warning has already been printed
+elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
   say "DRYRUN: would save WORKSPACE_ROOT=$WSROOT to $ENV_FILE"
 else
   upsert_env WORKSPACE_ROOT "$WSROOT" "$ENV_FILE"
