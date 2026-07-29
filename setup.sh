@@ -455,18 +455,37 @@ expand_home() {
 # (Native Linux was previously told to run `wsl --install`, which is nonsense on Linux.)
 platform_help() {
   local sys="${1:-${SETUP_FAKE_UNAME:-$(uname -s)}}"
-  if [ "$sys" = "Linux" ]; then
-    say "This installer supports macOS and Windows (via WSL2 Ubuntu) today."
-    say "Native Linux isn't supported yet — the portal's service wiring is Mac/WSL-specific."
-    say "If you need a native-Linux path, open an issue on the session-portal-setup repo."
-  else
-    say "If you're on Windows, set up WSL2 first, then re-run this:"
-    say "  1. Open PowerShell as Administrator (right-click > Run as administrator)"
-    say "  2. Run:  wsl --install"
-    say "  3. Restart your PC when it asks."
-    say "  4. Open the 'Ubuntu' app from the Start menu and finish its first-time setup."
-    say "  5. Paste this same install command into the Ubuntu window."
-  fi
+  case "$sys" in
+    Linux)
+      say "This installer supports macOS and Windows (via WSL2 Ubuntu) today."
+      say "Native Linux isn't supported yet — the portal's service wiring is Mac/WSL-specific."
+      say "If you need a native-Linux path, open an issue on the session-portal-setup repo."
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      # Git Bash specifically. It LOOKS like a working bash — teammates paste the
+      # mac one-liner into it and land here — but it is not WSL, so none of the
+      # service wiring applies. Previously this fell into the generic Windows
+      # branch, which told them to run `wsl --install` and then "paste this same
+      # command", i.e. the bash one-liner. The PowerShell bootstrap already does
+      # the whole WSL dance for them, so point at that instead.
+      say "You're running Git Bash (MSYS/MINGW). This installer can't run here —"
+      say "Git Bash isn't WSL, so the portal's service wiring has nothing to attach to."
+      say ""
+      say "Use the Windows installer instead. Open PowerShell (not Git Bash) and run:"
+      say ""
+      say "  irm https://raw.githubusercontent.com/yourdoctorsonline/session-portal-setup/main/setup.ps1 | iex"
+      say ""
+      say "That sets up WSL2 for you if it's missing, then runs this installer inside it."
+      ;;
+    *)
+      say "If you're on Windows, set up WSL2 first, then re-run this:"
+      say "  1. Open PowerShell as Administrator (right-click > Run as administrator)"
+      say "  2. Run:  wsl --install"
+      say "  3. Restart your PC when it asks."
+      say "  4. Open the 'Ubuntu' app from the Start menu and finish its first-time setup."
+      say "  5. Paste this same install command into the Ubuntu window."
+      ;;
+  esac
 }
 
 # ensure_python3 -> make python3 available (the harness enforcement hooks need it). The

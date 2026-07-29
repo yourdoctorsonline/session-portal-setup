@@ -29,6 +29,7 @@ set -u
 # bill of health for a check that compared nothing.
 DRIFT=0
 UNVERIFIED=0
+EOLONLY=0
 
 # `${DRIFT_REPO+x}` tests whether the variable is SET, not whether it is
 # non-empty: an explicit DRIFT_REPO="" is a caller saying "there is no repo copy
@@ -63,7 +64,7 @@ references/03-plan.md references/04-build.md references/05-verify.md
 references/06-ship.md references/07-learn.md scripts/ledger.sh
 scripts/scaffold-run.sh scripts/check-plan-refs.sh scripts/lesson_tripwire.py
 scripts/watch.py scripts/test_gates.py scripts/check-skill-drift.sh
-scripts/trigger-contract.sh scripts/test_lesson_tripwire.py"
+scripts/trigger-contract.sh scripts/test_lesson_tripwire.py scripts/selfcheck.sh"
 
 # --- the published copy: ONE archive request, not one per file ---------------
 # N independent fetches can straddle a push and produce a mixed-commit
@@ -125,8 +126,22 @@ cmp_pair() {
     [ -f "$db/$f" ] && [ ! -L "$db/$f" ] && eb=1
     if [ "$ea" = "1" ] && [ "$eb" = "1" ]; then
       if ! cmp -s "$da/$f" "$db/$f"; then
-        echo "DRIFT: $f differs between $la and $lb"
-        DRIFT=1
+        # Byte-differing is not the same as content-differing. A Windows
+        # checkout stores identical CONTENT with CRLF endings, and this
+        # byte-exact compare reported EVERY text file as drifted — 18 of 18 on
+        # a teammate's machine whose payload was in fact current. The false
+        # positive has a distinctive signature (all files rather than a few),
+        # and its real cost was teaching readers to ignore the guard.
+        #
+        # So: re-compare with CR stripped. Identical => cosmetic, reported as a
+        # NOTE and NOT counted as drift. Still different => real drift, as before.
+        if cmp -s <(tr -d '\r' < "$da/$f") <(tr -d '\r' < "$db/$f"); then
+          echo "NOTE: $f differs only by line endings between $la and $lb (content identical)"
+          EOLONLY=$((EOLONLY + 1))
+        else
+          echo "DRIFT: $f differs between $la and $lb"
+          DRIFT=1
+        fi
       fi
     elif [ "$ea" = "1" ]; then
       echo "DRIFT: $f present in $la, MISSING from $lb"
@@ -157,6 +172,14 @@ done
 if [ "$_n" -lt 2 ]; then
   echo "NOTE: no comparison performed — only $_n harness copy present"
   UNVERIFIED=1
+fi
+
+# Line-ending-only differences are reported but do NOT change the verdict: the
+# content matched, so there is nothing to re-install. Printed after the pair
+# loop so the count is a single line rather than N scattered NOTEs.
+if [ "$EOLONLY" -gt 0 ]; then
+  echo "NOTE: $EOLONLY file(s) differ ONLY by line endings (CRLF vs LF) — cosmetic, not drift."
+  echo "NOTE: to stop this recurring, ship a .gitattributes carrying '* text=auto eol=lf'."
 fi
 
 # A definite finding outranks an unperformed one, and both are printed either

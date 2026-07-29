@@ -49,19 +49,34 @@ hardening rules. Reviewers are dispatched by the depth-0 controller, never by an
 implementer subagent (depth-1 can't spawn — see `04-build.md` § Spawn topology).
 This holds if review ever moves per-task into Phase 4: still controller-driven.
 
-**Route reviewers by the SURFACE's ceiling** (`model:` per dispatch). For a LARGE or open-ended
-surface — whole-branch review, a big/novel diff, a security or edge-case hunt over real code —
-use **Fable**: that's where the frontier reasoner earns its rate (it found 8/14 real bugs in a
-1,130-line file vs Opus's 5, fewest false positives, cheapest per bug — `wiki/methodology/eng-harness.md`).
-For a BOUNDED check — a small diff, a short list, a single function — a cheaper reviewer
-(**Sonnet**, or **Haiku** for the mechanical part) ties Fable at a fraction of the cost (384-gen
-model-bench: all tiers within <1 point on bounded checks). Don't reflexively spend Fable on every
-review; spend it where the surface is big enough to have a real ceiling. Either way, give reviewers
-an **output-only discipline: return findings (file:line + quote + severity + failure scenario),
-never rewritten code** — that keeps the tier cheap and forces the fix back onto the Sonnet build step.
+**Route reviewers by the SURFACE's ceiling** (`model:` per dispatch — an unnamed dispatch silently
+runs at the ambient default: Sonnet where `CLAUDE_CODE_SUBAGENT_MODEL` is set, otherwise the
+conductor's own Opus. Never leave a reviewer unnamed). For a LARGE or open-ended surface —
+whole-branch review, a big/novel diff, a security or edge-case hunt over real code — use
+**Fable 5** (`claude-fable-5`): that's where the frontier reasoner earns its rate (it found 8/14
+real bugs in a 1,130-line file vs Opus's 5, fewest false positives, cheapest per bug —
+`wiki/methodology/eng-harness.md`). For a BOUNDED check — a small diff, a short list, a single
+function — a cheaper reviewer (**Sonnet 5**, or **Haiku 4.5** for the mechanical part) ties Fable at
+a fraction of the cost (384-gen model-bench: all tiers within <1 point on bounded checks). Don't
+reflexively spend Fable on every review; spend it where the surface is big enough to have a real
+ceiling. Either way, give reviewers an **output-only discipline: return findings (file:line + quote
++ severity + failure scenario), never rewritten code** — that keeps the tier cheap and forces the
+fix back onto the Sonnet 5 build step.
 
-- **Do Not Trust the Report** — the reviewer treats implementer reports as
-  unverified claims and verifies them against the diff and the action ledger
+**Fable refusal fallback — an empty review is UNRUN, never PASS.** Fable 5 runs safety classifiers
+over research biology and MOST cybersecurity content and can refuse. The refusal arrives as HTTP 200 with
+`stop_reason: "refusal"` — not an error — so a refused reviewer subagent returns **nothing,
+silently**, and this layer reads as "no findings found." A security pass is the likeliest review to
+trip it and the worst one to lose. So: **a reviewer that returns no findings AND no quoted lines is
+treated as UNRUN.** Re-dispatch the identical review on **Opus 4.8** (`claude-opus-4-8` — the only
+supported fallback target *at launch*; expansion expected, so re-check before hard-coding it), note
+the swap in `run.md`, and only then read the result. Where the API
+call is yours to write, declare it up front instead: `betas: ["server-side-fallback-2026-06-01"]` +
+`fallbacks: [{"model": "claude-opus-4-8"}]` (fallbacks are not automatic — a request without them
+just stops). **Record the reviewer's model in the `verify:review` ledger row** — that row is the only
+after-the-fact evidence of which tier actually reviewed, and of any Fable→Opus swap.
+Opus 4.8 keeps final judgment regardless: reviewers find, the conductor decides.
+
   (give the reviewer the watch JSONL path as ground truth).
 - **Quote gate** — every finding must cite the verbatim motivating line
   (`file:line` + the exact text). A finding that can't quote its line is
@@ -71,8 +86,9 @@ Two verdicts per task, kept separate: **Spec compliance** vs the AC IDs
 (Missing / Extra / Misunderstood — over-building is a failure too) and **Code
 quality** (Critical / Important / Nice-to-have). Critical or Important → fix →
 mandatory re-review. Loop until zero blocking findings. Lane C: final whole-branch
-review on Fable + security pass (OWASP basics, secrets scan).
-`meta-proof-of-work` Gate 2 satisfies the final adversarial pass where installed.
+review on Fable 5 + security pass (OWASP basics, secrets scan) — the security pass
+is the one most likely to hit a `cyber` refusal, so apply the Opus 4.8 fallback
+above rather than accepting a silent empty result.
 
 ## Layer 3 — Runtime (tests pass ≠ feature works)
 

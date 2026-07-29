@@ -218,6 +218,21 @@ Close the run (`run.md` status: complete). Ask: "How did this land? Any adjustme
   device or client, past-CDN origin check. Unit and mock evidence is structurally
   blind to model/contract bugs; a small runtime fix pass beats a clean skip.
   Promoted by tripwire (recurred 6 days).
+- 2026-07-27: **An internally-consistent check is not a correct one.** A system checking
+  its own homework always gives itself full marks. Before reporting any check as PASSED,
+  **name the independent thing it was compared against** — a source the code under test does
+  not produce or control (the vendor's own billing figure, a separate system's records, a
+  human-verified fixture). If the honest answer is "nothing outside the system", report the
+  check as WEAK, never as green. Two distinct failure shapes, both seen in one run:
+  (a) the reference is derived from the artifact being checked (a reconciliation that summed
+  `$data` to build the number it compared `$data` against — it can never fail); (b) the check
+  is real but measures the wrong property, and passing it *feels* like validation (a
+  landing-page inference whose spend total matched the ad account to the cent while misfiling
+  ~85% of that spend into the wrong bucket — the total was right, the distribution was wrong).
+  Shape (b) is the dangerous one: it produces a confident green tick. What broke it was an
+  outside source — user registration records showing where clicks actually landed.
+  Promoted by tripwire and **approved by the user 2026-07-27** (recurred 2026-07-10,
+  2026-07-16, 2026-07-26, 2026-07-27 — twice in the last run alone).
 
 ## Self-Update
 
