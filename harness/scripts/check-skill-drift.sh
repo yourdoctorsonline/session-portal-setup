@@ -64,7 +64,8 @@ references/03-plan.md references/04-build.md references/05-verify.md
 references/06-ship.md references/07-learn.md scripts/ledger.sh
 scripts/scaffold-run.sh scripts/check-plan-refs.sh scripts/lesson_tripwire.py
 scripts/watch.py scripts/test_gates.py scripts/check-skill-drift.sh
-scripts/trigger-contract.sh scripts/test_lesson_tripwire.py scripts/selfcheck.sh"
+scripts/trigger-contract.sh scripts/test_lesson_tripwire.py scripts/selfcheck.sh
+scripts/harness-doctor.sh"
 
 # --- the published copy: ONE archive request, not one per file ---------------
 # N independent fetches can straddle a push and produce a mixed-commit
