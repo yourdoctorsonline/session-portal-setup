@@ -46,6 +46,38 @@ echo "===== ENG-HARNESS DOCTOR v1 ====="
 echo "when: $(date -u +%Y-%m-%dT%H:%M:%SZ)   harness: $HERE"
 echo "python3: ${PY:-NONE}   sandbox: $SANDBOX"
 
+# --- preflight: am I actually sitting inside an installed harness? -----------
+# Copied somewhere on its own and run, EVERY sibling script is absent, every
+# gate check reports [FAIL], and the verdict reads "9 gates are not working —
+# a gate that cannot block is not a gate". That conclusion is wrong and it is
+# wrong in the dangerous direction: it sends the reader off to fix gates that
+# are fine, when the real answer is "the harness is not here".
+#
+# Same misreport shape as calling a line-ending difference a payload drift.
+# The harness's own corollary applies to the doctor too: a check that COULD NOT
+# RUN is not a check that FAILED. So this exits 2 (could-not-test), never 1.
+MISSING_CORE=""
+for _s in ledger.sh scaffold-run.sh check-plan-refs.sh watch.py; do
+  [ -f "$HERE/$_s" ] || MISSING_CORE="$MISSING_CORE $_s"
+done
+if [ -n "$MISSING_CORE" ]; then
+  printf '\n'
+  echo "CANNOT TEST — no installed harness next to this script."
+  echo "  looked in: $HERE"
+  echo "  missing:  ${MISSING_CORE# }"
+  printf '\n'
+  echo "This script tests the harness's OWN gates, so it has to run from inside"
+  echo "the installed harness rather than on its own:"
+  printf '\n'
+  echo "  bash ~/.claude/skills/eng-harness/scripts/harness-doctor.sh"
+  printf '\n'
+  echo "If that path doesn't exist, the harness isn't installed yet — run the"
+  echo "installer first. This is a setup gap, not a broken gate. Reporting it as"
+  echo "FAIL would send you to fix gates that are fine."
+  echo "===== END DOCTOR ====="
+  exit 2
+fi
+
 # ---------------------------------------------------------------- Phase 1 ----
 head_ "Phase 1 — Intake (scaffold-run.sh)"
 if [ ! -f "$HERE/scaffold-run.sh" ]; then
