@@ -1,7 +1,7 @@
-source_commit=87f7566a
+source_commit=eda2b25e
 source_branch=feat/installer-payload-sync
 source_dirty=0
-harness_stamp=1785424425
+harness_stamp=1785426776
 regress_override=0
 sha256 e60102ac5ee253771b01e88a208b482d689869240ddd7835be2b129b62a1f9e2  harness/hooks/merge-gate.py
 sha256 f7300b49a997353fd58560c60df2c3ef07404bd0de8d60380d6253b478321103  harness/hooks/precompact-run-snapshot.py
@@ -14,8 +14,9 @@ sha256 2ffdce208209c89a61da19b09baf34c0731ca3ca167e28dce7fcbec1c545b1ae  harness
 sha256 d4748b2bcdaa4ea9b804a48c570fc1cb9372c7b09dd454718e7f7b77a62aa2cc  harness/references/07-learn.md
 sha256 35d125ddbdfff008e616dc6ddd93c907047f70bb892975896ea61b6f4aa61c7c  harness/references/laws.md
 sha256 d9bcb016fba66cf2fb8702e4cefbcfb4d7147f2b3b64adb22cc66aae6e830320  harness/scripts/check-plan-refs.sh
-sha256 7d59ae2ce3672c3c11f8ab570531042122d129cbe36ad1a9b3965da49834fb1a  harness/scripts/check-skill-drift.sh
+sha256 fd27c1b767b6c11af32e52d526d73fecb6f1cd68dd52ae58be5e65b065523dd3  harness/scripts/check-skill-drift.sh
 sha256 6faa038f4cf75ff149bd8a8392437c33c9cc83695406a70ea73cf02736d0b319  harness/scripts/harness-doctor.sh
+sha256 12a729f969e1711d9631e0e2078d8d4aa7d9dbc4afa5d539e4b91f514aba70fd  harness/scripts/harness-heal.sh
 sha256 258d564613664f8a68925d8ce0579073d1894ff0e1214a54a91ce41ceb5edf2e  harness/scripts/ledger.sh
 sha256 ca463beb0ab7090ec8cfdd79d168d5e0ccd9dff2b5ff884ad001ab5dc8637d43  harness/scripts/lesson_tripwire.py
 sha256 7d8af202a5b70afb26c547d88d5e0440b26fb9f935e36716a6e5ff93a7a5bec9  harness/scripts/scaffold-run.sh
