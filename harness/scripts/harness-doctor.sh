@@ -19,10 +19,18 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PASS=0; FAIL=0; NA=0
+PASS=0; FAIL=0; NA=0; UNT=0
 ok()   { PASS=$((PASS+1)); printf '  [PASS] %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  [FAIL] %s\n' "$1"; }
 na()   { NA=$((NA+1));     printf '  [ -- ] %s\n' "$1"; }
+# UNTESTED is deliberately NOT a FAIL and deliberately NOT a pass. It mirrors the
+# harness's own fourth verdict, UNVERIFIABLE: the environment lacks something the
+# check needs (an interpreter), so the gate's health is UNKNOWN here. Calling that
+# FAIL tells a teammate their gates are broken when the real answer is "install
+# Python"; calling it PASS hides a genuinely unverified gate. Both are lies.
+# A MISSING HARNESS FILE stays a FAIL — that is a broken install, not an
+# environment gap.
+unt()  { UNT=$((UNT+1));   printf '  [UNTESTED] %s\n' "$1"; }
 head_() { printf '\n-- %s --\n' "$1"; }
 
 SANDBOX="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}/hdoctor.$$")"
@@ -119,7 +127,7 @@ head_ "Phase 3 — Plan (check-plan-refs.sh)"
 if [ ! -f "$HERE/check-plan-refs.sh" ]; then
   bad "check-plan-refs.sh not installed"
 elif [ -z "$PY" ]; then
-  bad "cannot test — no working Python 3 (the gate needs it)"
+  unt "not tested here — no working Python 3 (this gate needs it)"
 else
   mkdir -p pl
   printf 'real content\nline two\nline three\n' > pl/real.txt
@@ -153,6 +161,16 @@ ledger_reset() { rm -f .eng-harness/ledger.jsonl; }
 gate() { bash "$L" check "$1" >/dev/null 2>&1; }
 if [ ! -f "$L" ]; then
   bad "ledger.sh not installed"
+elif [ -z "$PY" ]; then
+  # Determinable, not merely untestable — so this is a FAIL, not UNTESTED.
+  # ledger.sh shells out to python3 twice (json_escape, and the check parser).
+  # With no interpreter, `append` writes a malformed row and `check` then cannot
+  # parse it. Measured behaviour: it returns UNVERIFIABLE, i.e. it fails CLOSED.
+  # Worth stating both halves — "broken" and "unsafe" are different, and only
+  # one of them is true here.
+  bad "ship gate NON-FUNCTIONAL here — ledger.sh needs Python 3 and none is installed"
+  na "  (it fails CLOSED — refuses to pass rather than waving work through, so"
+  na "   nothing unsafe ships; but no run can COMPLETE until Python 3 is present)"
 else
   R=doctor-probe
   # (a) all four layers PASS -> gate passes
@@ -212,7 +230,7 @@ head_ "Phase 5 — Verify (watch.py, said-vs-did)"
 if [ ! -f "$HERE/watch.py" ]; then
   bad "watch.py not installed"
 elif [ -z "$PY" ]; then
-  bad "cannot test — no working Python 3"
+  unt "not tested here — no working Python 3"
 else
   # With no session ledger there is nothing to compare, and that must be
   # non-zero: a silent zero here would let "never ran" read as "verified".
@@ -236,7 +254,7 @@ MG="$HOME/.claude/hooks/merge-gate.py"
 if [ ! -f "$MG" ]; then
   bad "merge-gate.py not installed — merges are ungated"
 elif [ -z "$PY" ]; then
-  bad "cannot test — no working Python 3"
+  unt "not tested here — merge-gate is Python, and the ledger it consults needs Python too"
 else
   mkdir -p .eng-harness
   mg() { printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$1" \
@@ -281,7 +299,7 @@ PC="$HOME/.claude/hooks/precompact-run-snapshot.py"
 if [ ! -f "$PC" ]; then
   bad "precompact-run-snapshot.py not installed — run position is lost on compaction"
 elif [ -z "$PY" ]; then
-  bad "cannot test — no working Python 3"
+  unt "not tested here — no working Python 3"
 else
   if echo '{}' | "$PY" "$PC" >/dev/null 2>&1; then
     ok "precompact hook exits 0 (never blocks compaction)"
@@ -296,7 +314,7 @@ TW="$HERE/lesson_tripwire.py"
 if [ ! -f "$TW" ]; then
   bad "lesson_tripwire.py not installed — repeat lessons never become rules"
 elif [ -z "$PY" ]; then
-  bad "cannot test — no working Python 3"
+  unt "not tested here — no working Python 3"
 else
   # Recurrence is deliberately defined as spanning DISTINCT DAYS — a lesson
   # written twice in one session is one session's notes, not a pattern. So the
@@ -353,7 +371,7 @@ fi
 
 head_ "The harness's own test suites"
 if [ -z "$PY" ]; then
-  bad "cannot run — no working Python 3"
+  unt "not tested here — no working Python 3"
 else
   for t in test_gates.py test_lesson_tripwire.py; do
     if [ ! -f "$HERE/$t" ]; then bad "$t not installed"; continue; fi
@@ -367,13 +385,23 @@ fi
 
 # ---------------------------------------------------------------- verdict ----
 printf '\n'
-echo "checks passed: $PASS   failed: $FAIL   not-applicable: $NA"
-if [ "$FAIL" -eq 0 ]; then
-  echo "VERDICT: PASS — every gate proved it works AND proved it can fail"
-  echo "===== END DOCTOR ====="
-  exit 0
-else
+echo "checks passed: $PASS   failed: $FAIL   untested: $UNT   not-applicable: $NA"
+# Three-way verdict, and the middle one is the point. A real failure outranks an
+# untested one; an untested one must never be folded into PASS, or "we couldn't
+# check" becomes "it's fine" — the exact loophole the harness closed with its
+# fourth verdict.
+if [ "$FAIL" -gt 0 ]; then
   echo "VERDICT: FAIL — $FAIL gate(s) are not working. A gate that cannot block is not a gate."
   echo "===== END DOCTOR ====="
   exit 1
+elif [ "$UNT" -gt 0 ]; then
+  echo "VERDICT: PARTIAL — nothing is broken, but $UNT gate(s) could not be tested"
+  echo "         on this machine (no working Python 3). Those gates are UNKNOWN here,"
+  echo "         not healthy. Install Python 3 and re-run for a full verdict."
+  echo "===== END DOCTOR ====="
+  exit 2
+else
+  echo "VERDICT: PASS — every gate proved it works AND proved it can fail"
+  echo "===== END DOCTOR ====="
+  exit 0
 fi
