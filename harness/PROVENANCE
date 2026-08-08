@@ -1,10 +1,12 @@
-source_commit=eda2b25e
-source_branch=feat/installer-payload-sync
+source_commit=410ec9f3
+source_branch=feat/trial-reels-insight-captions
 source_dirty=0
 harness_stamp=1785426776
 regress_override=0
 sha256 e60102ac5ee253771b01e88a208b482d689869240ddd7835be2b129b62a1f9e2  harness/hooks/merge-gate.py
+sha256 758d265b8606235318067536a18220b9fe53900fa8646e50263fbba934d7611e  harness/hooks/output-contract.py
 sha256 f7300b49a997353fd58560c60df2c3ef07404bd0de8d60380d6253b478321103  harness/hooks/precompact-run-snapshot.py
+sha256 aea18359b08f0b83b16fee0338a311e4567e768dadf603fe9ca3a7e00fe9ce87  harness/hooks/slop-gate.py
 sha256 ca7d4eeac1084d56c0e0f3f44060c66cf94e66621f64cb92700aa28d50ddb41a  harness/references/01-intake.md
 sha256 10060e8586b5e8a53307787bd04ea7b211e5c8e89afdea02dbc76f58b2a41910  harness/references/02-spec.md
 sha256 141f8aa14d9cbd95a8f73d3810fa61c08fdc7f89544537f3355fdf6696d8005c  harness/references/03-plan.md

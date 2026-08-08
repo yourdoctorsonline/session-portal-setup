@@ -428,6 +428,22 @@ if not has_cmd("PreCompact", "precompact-run-snapshot.py"):
         {"hooks": [{"type": "command", "command": pc}]})
     changed = True
 
+# The two output gates. `oc` restates the plain-language + no-AI-tells contract
+# on every prompt; `sg` reads what was actually written and BLOCKS the turn when
+# it carries the banned tells. The second exists because the first alone failed:
+# the rule was injected, read, and broken in the very next message. A rule the
+# writer can ignore is a preference; a check that reads the output is a gate.
+oc = 'python3 "%s"' % os.path.join(hooks_dir, "output-contract.py")
+sg = 'python3 "%s"' % os.path.join(hooks_dir, "slop-gate.py")
+if not has_cmd("UserPromptSubmit", "output-contract.py"):
+    section_list("UserPromptSubmit").append(
+        {"hooks": [{"type": "command", "command": oc}]})
+    changed = True
+if not has_cmd("Stop", "slop-gate.py"):
+    section_list("Stop").append(
+        {"hooks": [{"type": "command", "command": sg}]})
+    changed = True
+
 if changed:
     os.makedirs(os.path.dirname(settings) or ".", exist_ok=True)
     tmp = "%s.tmp.%d" % (settings, os.getpid())
@@ -1214,6 +1230,8 @@ if preset_wants "$PRESET" harness && [ -d "$SRC/harness/hooks" ]; then
         say  "  Add these two hooks yourself in Claude Code, or re-run me:"
         say  "    PreToolUse (matcher Bash):  python3 \"$USER_HOOKS/merge-gate.py\""
         say  "    PreCompact:                 python3 \"$USER_HOOKS/precompact-run-snapshot.py\""
+        say  "    UserPromptSubmit:           python3 \"$USER_HOOKS/output-contract.py\""
+        say  "    Stop:                       python3 \"$USER_HOOKS/slop-gate.py\""
       fi
     else
       warn "Couldn't copy the enforcement hooks — the harness skill still works."
