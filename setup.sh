@@ -1425,12 +1425,22 @@ if preset_wants "$PRESET" workspace; then
     # shortcut is added. This downloads a ~400 MB model on first run and takes a few
     # minutes; it is the slowest step in the install and it only happens once.
     if [ "$AOS_OK" = "1" ] && [ -x "$AOS_DIR/scripts/setup-memory.sh" ]; then
-      say "Setting up memory (first run downloads ~400 MB — this is the slow part)..."
-      if ( cd "$AOS_DIR" && bash scripts/setup-memory.sh </dev/null >/dev/null 2>&1 ); then
-        ok "Memory ready (searchable, local to this Mac, no dashboard)."
+      # ASK FIRST. `setup-memory.sh` with no flags always ends in a `memory:reindex
+      # --force`, which re-embeds every source even when nothing changed — so calling it
+      # unconditionally turned every re-run of this installer into a full multi-minute
+      # re-index of a teammate's entire memory. That breaks the promise in this file's
+      # own header ("safe to re-run: anything already done gets skipped") and AC-YTI-011.
+      # `--check` only reports; it writes nothing. Caught in pre-merge review 2026-08-10.
+      if ( cd "$AOS_DIR" && bash scripts/setup-memory.sh --check </dev/null >/dev/null 2>&1 ); then
+        ok "Memory already set up — skipped (nothing to re-index)."
       else
-        warn "Memory setup didn't finish. Everything else still works; retry with:"
-        say  "    cd \"$AOS_DIR\" && bash scripts/setup-memory.sh"
+        say "Setting up memory (first run downloads ~400 MB — this is the slow part)..."
+        if ( cd "$AOS_DIR" && bash scripts/setup-memory.sh </dev/null >/dev/null 2>&1 ); then
+          ok "Memory ready (searchable, local to this Mac, no dashboard)."
+        else
+          warn "Memory setup didn't finish. Everything else still works; retry with:"
+          say  "    cd \"$AOS_DIR\" && bash scripts/setup-memory.sh"
+        fi
       fi
     elif [ "$AOS_OK" = "1" ]; then
       warn "Memory setup script not found in $AOS_DIR — skipping."
@@ -1531,26 +1541,45 @@ else
     #
     # On failure, name the SKILLS that stop working. "ffmpeg missing" means nothing to
     # someone who has never heard of ffmpeg; "video skills won't run" does.
+    # The consequence text comes from the COMMITTED map (AC-YTI-016), not from strings
+    # inline here. Hardcoded consequences drift silently as the skill set changes; a
+    # data file can be regenerated and diffed. If the map is missing, say so rather than
+    # printing a bare tool name — an unexplained "ffmpeg failed" is useless to the
+    # person reading it, who has never heard of ffmpeg.
+    TOOL_MAP="$SRC/os-payload/tool-skills.map"
+    tool_consequence() {
+      # tool_consequence <command> -> echoes "<consequence> (<skills>)", or a fallback
+      local line
+      if [ -r "$TOOL_MAP" ]; then
+        line="$(grep "^$1|" "$TOOL_MAP" 2>/dev/null | head -1)"
+        if [ -n "$line" ]; then
+          printf '%s (%s)' "$(printf '%s' "$line" | cut -d'|' -f2)" \
+                           "$(printf '%s' "$line" | cut -d'|' -f3)"
+          return 0
+        fi
+      fi
+      printf 'some skills will fail (tool-skills.map not found, so I cannot say which)'
+    }
     tool_check() {
-      # tool_check <command> <probe-args> <plain-english consequence>
+      # tool_check <command> <probe-args>
       if "$1" $2 >/dev/null 2>&1; then
         check "$1 works" 1
       else
-        check "$1 is NOT working — $3" 0
+        check "$1 is NOT working — $(tool_consequence "$1")" 0
       fi
     }
-    tool_check ffmpeg  "-version"  "video skills can't run (social content, long-to-short)"
-    tool_check ffprobe "-version"  "video skills can't read clip lengths"
-    tool_check yt-dlp  "--version" "YouTube skills can't fetch anything"
-    tool_check jq      "--version" "the long-to-short pipeline can't parse its data"
-    tool_check gh      "--version" "session wrap-up can't reach GitHub"
-    tool_check node    "--version" "memory can't run at all"
-    tool_check python3 "--version" "most skill scripts can't run, and the harness gates can't fire"
+    tool_check ffmpeg  "-version"
+    tool_check ffprobe "-version"
+    tool_check yt-dlp  "--version"
+    tool_check jq      "--version"
+    tool_check gh      "--version"
+    tool_check node    "--version"
+    tool_check python3 "--version"
     # Playwright: the library alone is not enough — probe the BROWSER it drives.
     if npx --yes playwright --version >/dev/null 2>&1; then
       check "browser automation works" 1
     else
-      check "browser automation is NOT working — 6 skills that drive a browser will fail (social content, brand voice, diagrams, image gen, visual identity, the harness)" 0
+      check "browser automation is NOT working — $(tool_consequence playwright)" 0
     fi
   fi
   if preset_wants "$PRESET" signin; then

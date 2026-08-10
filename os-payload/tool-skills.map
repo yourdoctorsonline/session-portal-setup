@@ -1,0 +1,28 @@
+# tool -> the skills that stop working without it
+#
+# Format:  <command>|<plain-english consequence>|<comma-separated skill names>
+# Lines starting with # and blank lines are ignored.
+#
+# WHY THIS FILE EXISTS, rather than the strings living inside setup.sh:
+# a hardcoded consequence string drifts silently. When a skill is added, removed, or
+# stops shelling out to a tool, nothing makes the installer's failure message wrong in
+# a way anyone notices — it just quietly lies. Here the mapping is data, so it can be
+# regenerated from the shipped skill set and diffed. AC-YTI-016 requires the message to
+# be drawn from a committed map for exactly that reason; an earlier version of this
+# change hardcoded them and was caught in pre-merge review 2026-08-10.
+#
+# Derived 2026-08-10 by scanning what the 51 shipped skills actually invoke (not what
+# they mention in prose — an early scan counted 65 skills "needing ImageMagick" because
+# the English word "convert" matched; the real count is zero).
+#
+# Regenerate after changing the shipped skill set:
+#   grep -rlE 'subprocess.*ffmpeg|ffmpeg -|`ffmpeg' .claude/skills --include=*.md --include=*.py --include=*.sh
+
+ffmpeg|video skills can't run|00-longform-to-shortform,00-social-content
+ffprobe|video skills can't read clip lengths|00-longform-to-shortform,00-social-content
+yt-dlp|YouTube skills can't fetch anything|00-longform-to-shortform,00-social-content,meta-skill-system-creator,tool-youtube
+jq|the long-to-short pipeline can't parse its data|00-longform-to-shortform
+gh|session wrap-up can't reach GitHub|meta-wrap-up
+node|memory can't run at all|<the memory engine>
+python3|most skill scripts can't run, and the harness gates can't fire|<most skills>
+playwright|browser-driving skills fail|00-social-content,mkt-brand-voice,mkt-visual-identity,viz-excalidraw-diagram,viz-image-gen,eng-harness
