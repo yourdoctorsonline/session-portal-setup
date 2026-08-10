@@ -175,6 +175,79 @@ if [ "$_n" -lt 2 ]; then
   UNVERIFIED=1
 fi
 
+# --- enforcement hooks ------------------------------------------------------
+# The payload ships hooks as well as the skill, and until 2026-08-10 nothing
+# compared them. That is not hypothetical: the merge-gate fix landed in the repo
+# on 2026-07-27 and the copy this operator's sessions actually load was still the
+# broken one two weeks later, blocking merges in the wrong repository and — the
+# half nobody noticed — ALLOWING merges in a repo whose own ship gate was failing.
+# A guard that watches the skill and ignores the code that enforces it is
+# watching the map instead of the road.
+#
+# Hooks live under a DIFFERENT root than the skill (`.claude/hooks` beside
+# `.claude/skills/eng-harness`), so they cannot just join $FILES.
+#
+# Missing is a NOTE here, not DRIFT, and that is a deliberate difference from the
+# skill files above. Hook installs are legitimately partial: this machine wires
+# merge-gate and precompact from ~/.claude-personal and slop-gate and
+# output-contract from ~/.claude, so a copy carrying two of the four is correct,
+# not broken. Reporting those two as drift on every run would be a permanent
+# false positive, and a guard that always complains gets ignored — which costs
+# more than the case it would catch. CONTENT divergence between copies that BOTH
+# carry a hook is the real failure, and that still fails closed.
+HOOK_FILES="merge-gate.py precompact-run-snapshot.py output-contract.py slop-gate.py"
+
+HOOK_NAMES=()
+HOOK_DIRS=()
+add_hook_copy() {
+  [ -n "$2" ] && [ -d "$2" ] || return 0
+  HOOK_NAMES+=("$1")
+  HOOK_DIRS+=("$2")
+}
+# Derived from the skill roots resolved above so the two groups can never
+# disagree about which machine they are describing.
+add_hook_copy repo      "${R:+$(dirname "$(dirname "$R")")/hooks}"
+add_hook_copy personal  "$(dirname "$(dirname "$P")")/hooks"
+add_hook_copy installed "$(dirname "$(dirname "$I")")/hooks"
+add_hook_copy published "${U:+$U/hooks}"
+
+HOOK_COMPARED=0
+_hn=${#HOOK_NAMES[@]}
+for hf in $HOOK_FILES; do
+  _i=0
+  while [ "$_i" -lt "$_hn" ]; do
+    _j=$((_i + 1))
+    while [ "$_j" -lt "$_hn" ]; do
+      da="${HOOK_DIRS[$_i]}/$hf"; db="${HOOK_DIRS[$_j]}/$hf"
+      # `! -L` for the same reason as the skill loop: the published copy is an
+      # archive we did not author, and tar will happily create a symlink.
+      if [ -f "$da" ] && [ ! -L "$da" ] && [ -f "$db" ] && [ ! -L "$db" ]; then
+        HOOK_COMPARED=$((HOOK_COMPARED + 1))
+        if ! cmp -s "$da" "$db"; then
+          if cmp -s <(tr -d '\r' < "$da") <(tr -d '\r' < "$db"); then
+            echo "NOTE: hooks/$hf differs only by line endings between ${HOOK_NAMES[$_i]} and ${HOOK_NAMES[$_j]} (content identical)"
+            EOLONLY=$((EOLONLY + 1))
+          else
+            echo "DRIFT: hooks/$hf differs between ${HOOK_NAMES[$_i]} and ${HOOK_NAMES[$_j]}"
+            DRIFT=1
+          fi
+        fi
+      fi
+      _j=$((_j + 1))
+    done
+    _i=$((_i + 1))
+  done
+done
+
+# Vacuity guard. Without this the hook group could compare NOTHING — a wrong root,
+# a renamed directory, an empty HOOK_FILES — and the script would still exit 0,
+# reporting the same clean bill of health that let the stale merge-gate survive.
+# "Zero comparisons" and "zero differences" must never print the same verdict.
+if [ "$_hn" -ge 2 ] && [ "$HOOK_COMPARED" = "0" ]; then
+  echo "NOTE: hook comparison performed 0 file compares across $_hn copies — check the hook roots"
+  UNVERIFIED=1
+fi
+
 # Line-ending-only differences are reported but do NOT change the verdict: the
 # content matched, so there is nothing to re-install. Printed after the pair
 # loop so the count is a single line rather than N scattered NOTEs.

@@ -1,8 +1,9 @@
-source_commit=10b076d0
-source_branch=feat/trial-reels-insight-captions
+source_commit=52b580fa
+source_branch=feat/ydo-team-installer
 source_dirty=0
-harness_stamp=1785426776
+harness_stamp=1786356133
 regress_override=0
+sha256 5dbcf942923992166cfb9260e364e644a97a1b9fc334ec4bcf076ae1ea3b33a6  harness/SKILL.md
 sha256 e60102ac5ee253771b01e88a208b482d689869240ddd7835be2b129b62a1f9e2  harness/hooks/merge-gate.py
 sha256 758d265b8606235318067536a18220b9fe53900fa8646e50263fbba934d7611e  harness/hooks/output-contract.py
 sha256 f7300b49a997353fd58560c60df2c3ef07404bd0de8d60380d6253b478321103  harness/hooks/precompact-run-snapshot.py
@@ -15,8 +16,8 @@ sha256 5252d275fd40d88b3f8741a345463295a0c15333a162c778a5dade35b9271b0b  harness
 sha256 2ffdce208209c89a61da19b09baf34c0731ca3ca167e28dce7fcbec1c545b1ae  harness/references/06-ship.md
 sha256 d4748b2bcdaa4ea9b804a48c570fc1cb9372c7b09dd454718e7f7b77a62aa2cc  harness/references/07-learn.md
 sha256 35d125ddbdfff008e616dc6ddd93c907047f70bb892975896ea61b6f4aa61c7c  harness/references/laws.md
-sha256 d9bcb016fba66cf2fb8702e4cefbcfb4d7147f2b3b64adb22cc66aae6e830320  harness/scripts/check-plan-refs.sh
-sha256 fd27c1b767b6c11af32e52d526d73fecb6f1cd68dd52ae58be5e65b065523dd3  harness/scripts/check-skill-drift.sh
+sha256 ded4f7a8175b9064b94818f52a7c23214cb010a86f823c1500b7b5ce143fa19e  harness/scripts/check-plan-refs.sh
+sha256 ab05714dc365965a7a9a914d1ce3437d05e8dfb2a6463f4d4152fe2d6759fc78  harness/scripts/check-skill-drift.sh
 sha256 6faa038f4cf75ff149bd8a8392437c33c9cc83695406a70ea73cf02736d0b319  harness/scripts/harness-doctor.sh
 sha256 12a729f969e1711d9631e0e2078d8d4aa7d9dbc4afa5d539e4b91f514aba70fd  harness/scripts/harness-heal.sh
 sha256 258d564613664f8a68925d8ce0579073d1894ff0e1214a54a91ce41ceb5edf2e  harness/scripts/ledger.sh
@@ -27,4 +28,3 @@ sha256 787f2a4b0d8aa0453cdf887070f879e06f16926943bce6a48ab445556bedf158  harness
 sha256 0e610fa0bdf87cf22a8b2086c62058715c56d01802e45e07b6193995e567b44b  harness/scripts/test_lesson_tripwire.py
 sha256 647e2a28906c1d46d1ef73ab9e5308cb43babeebfba2a057c06a76f87fbd10eb  harness/scripts/trigger-contract.sh
 sha256 22c9b64e3ef96e9deb2fa99813903c25ed8e75c39a505914ffe570251148ed77  harness/scripts/watch.py
-sha256 5dbcf942923992166cfb9260e364e644a97a1b9fc334ec4bcf076ae1ea3b33a6  harness/SKILL.md

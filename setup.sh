@@ -239,17 +239,23 @@ any_creds() {
   return 1
 }
 
-# ws_repo_state DIR -> echoes what to do with the shared-workspace target dir:
-#   pull     = DIR is already the your-doctors-online repo (has .git + that remote)
+# aos_repo_state DIR -> echoes what to do with the Agentic OS target dir:
+#   pull     = DIR is already the yourdoctorsonline/agentic-os repo (.git + that remote)
 #   occupied = DIR exists and is non-empty but is NOT that repo (don't touch it)
 #   clone    = DIR is absent or empty (safe to clone into)
-ws_repo_state() {
+#
+# Renamed from ws_repo_state and repointed 2026-08-10: the shared your-doctors-online
+# workspace is no longer installed at all, but this function's look-alike guard is the
+# valuable part and is kept rather than hand-rolled again at the call site.
+# "occupied" matters most on the upstream template — a teammate who already cloned
+# simonc602/agentic-os into ~/repos/agentic-os must NOT have it silently pulled over.
+aos_repo_state() {
   local d="$1"
   # Match the EXACT org/repo at a boundary (optional .git, then space/end) so a fork
-  # (someone/your-doctors-online) or look-alike (…-online-DIFFERENT) is NOT treated as
-  # the canonical workspace.
+  # (someone-else/agentic-os), the upstream (simonc602/agentic-os), or a look-alike
+  # (…/agentic-os-DIFFERENT) is NOT treated as ours.
   if [ -d "$d/.git" ] && git -C "$d" remote -v 2>/dev/null \
-       | grep -Eq "[/:]yourdoctorsonline/your-doctors-online(\.git)?([[:space:]]|$)"; then
+       | grep -Eq "[/:]yourdoctorsonline/agentic-os(\.git)?([[:space:]]|$)"; then
     echo pull
   elif [ -e "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
     echo occupied
@@ -828,7 +834,12 @@ if [ "$PLATFORM" = "mac" ]; then
   elif [ "${SETUP_DRYRUN:-0}" != "1" ]; then
     warn "Homebrew still isn't available. Install it from https://brew.sh, then re-run me."
   fi
-  for tool in tmux ttyd qrencode; do
+  # tmux/ttyd/qrencode run the portal. The rest are what the SKILLS shell out to —
+  # scanned from the shipped skill set, not guessed. Without them a teammate installs
+  # cleanly, opens a skill, and hits "command not found" for a program they have never
+  # heard of and cannot be expected to fix. Order matters only in that node comes
+  # before the Playwright step below, which needs npx.
+  for tool in tmux ttyd qrencode ffmpeg yt-dlp jq gh node python3; do
     if have "$tool"; then
       ok "$tool already installed."
     elif [ "${SETUP_DRYRUN:-0}" = "1" ]; then
@@ -851,9 +862,13 @@ if [ "$PLATFORM" = "mac" ]; then
       warn "Can't install $tool — Homebrew isn't available (see the note above)."
     fi
   done
-elif [ "$PLATFORM" = "wsl" ]; then
+else
+  :
+fi
+
+if [ "$PLATFORM" = "wsl" ]; then
   MISSING=""
-  for tool in tmux ttyd python3 qrencode; do
+  for tool in tmux ttyd python3 qrencode ffmpeg jq gh nodejs; do
     have "$tool" || MISSING="$MISSING $tool"
   done
   if [ -n "$MISSING" ]; then
@@ -875,6 +890,28 @@ elif [ "$PLATFORM" = "wsl" ]; then
     say "  sudo snap install ttyd --classic"
   fi
 fi
+# ---- Playwright + its browser (AC-YTI-015) ----------------------------------
+# Six shipped skills drive a headless browser: 00-social-content, eng-harness,
+# mkt-brand-voice, mkt-visual-identity, viz-excalidraw-diagram, viz-image-gen.
+# Playwright is an npm package AND a separate ~150 MB browser download; installing
+# the package alone leaves every one of those skills failing at run time with an
+# error about a missing executable. Both, or neither.
+if preset_wants "$PRESET" tools; then
+  if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+    say "DRYRUN: would install Playwright + its Chromium browser (npx playwright install chromium)"
+  elif have npx; then
+    if npx --yes playwright install chromium </dev/null >/dev/null 2>&1; then
+      ok "Playwright browser installed."
+    else
+      warn "Couldn't install the Playwright browser. Six skills that drive a browser"
+      say  "  (social content, brand voice, diagrams, image gen, visual identity, the harness)"
+      say  "  will fail until it lands. Retry with:  npx playwright install chromium"
+    fi
+  else
+    warn "Skipping Playwright — npx isn't available (Node didn't install)."
+  fi
+fi
+
 else
   say "  [skip] basic tools — not needed for: $PRESET_LABEL"
 fi
@@ -1193,6 +1230,25 @@ if preset_wants "$PRESET" harness; then
   else
     warn "Couldn't install the YDO Agentic Harness skill."
   fi
+  # The harness's OWN dependencies. eng-harness marks zero-trust-verification
+  # Required:yes — it is the gate that checks claims against real command output
+  # instead of taking an agent's word. Until 2026-08-10 only eng-harness shipped, so
+  # every teammate had a harness missing the one part that cannot be talked around.
+  if [ -d "$SRC/harness-deps" ]; then
+    for _dep in zero-trust-verification meta-proof-of-work; do
+      if [ -d "$SRC/harness-deps/$_dep" ]; then
+        mkdir -p "$HOME/.claude/skills/$_dep"
+        if cp -R "$SRC/harness-deps/$_dep/." "$HOME/.claude/skills/$_dep/" 2>/dev/null; then
+          ok "  + $_dep"
+        else
+          warn "  couldn't install $_dep — the harness will run degraded."
+        fi
+      fi
+    done
+  else
+    warn "Harness dependency skills missing from the download — the verification gate"
+    say  "  (zero-trust-verification) won't be installed, so the harness runs degraded."
+  fi
  else
   # The preset asked for the harness but the (real) download didn't include it — don't
   # silently install nothing.
@@ -1311,52 +1367,87 @@ else
   say "  [skip] projects folder — not needed for: $PRESET_LABEL"
 fi
 
-# ---- shared YDO Agentic OS workspace repo -----------------------------------
-# Clones yourdoctorsonline/your-doctors-online (the team's PRIVATE shared Agentic OS
-# workspace) if absent, or git-pulls it if present. Fail-open on decline/auth/tooling.
-# DISABLED BY DEFAULT (2026-07-20): the private-repo clone was confusing teammates
-# (name mismatch vs. `agentic-os`, "couldn't clone (private)" dead-end without GitHub
-# access). Kept intact for easy re-enable once the access model is sorted — turn it back
-# on with SETUP_WORKSPACE_REPO=1. Default 0 = the step never prompts or runs.
-if [ "${SETUP_WORKSPACE_REPO:-0}" = "1" ]; then
-  step_banner "Shared YDO workspace"
-  WS_DEFAULT="$HOME/your-doctors-online"
+# ---- STEP 6c: the Agentic OS itself (AC-YTI-001/003/005/014) ----------------
+# Clones yourdoctorsonline/agentic-os — a clean fork of the upstream template at
+# v1.1.2 plus the paid Scrapes skill systems (51 skills). It carries NOBODY's session
+# data, memory, brand content or client work: context/ is the upstream blank template
+# set. See PROVENANCE.md in that repo.
+#
+# The old `your-doctors-online` clone that used to live here is GONE, not disabled
+# (removed 2026-08-10 at the owner's instruction). That repo carries YDO business
+# content whose privacy rules were last human-reviewed in July; nothing in this
+# installer depends on it any more, so nothing depends on that review being current.
+# AC-YTI-014 asserts the string is absent from this file.
+#
+# Auth is the teammate's OWN GitHub. No shared token is embedded or prompted for.
+if preset_wants "$PRESET" workspace; then
+  step_banner "Installing Agentic OS"
+  AOS_DEFAULT="${WSROOT:-$HOME/repos}/agentic-os"
   if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
-    say "DRYRUN: would offer to clone/update yourdoctorsonline/your-doctors-online into $WS_DEFAULT"
+    say "DRYRUN: would clone/update yourdoctorsonline/agentic-os into $AOS_DEFAULT"
+    say "DRYRUN: would then set up local memory (no dashboard, no server)"
   else
-    ask _WSREPO "Set up the shared YDO Agentic OS workspace (yourdoctorsonline/your-doctors-online)? [Y/n]" "Y"
-    case "$_WSREPO" in
-      [Nn]*) say "  [skip] shared workspace — you can clone it later." ;;
-      *)
-        ask WS_DIR "Where should it live?" "$WS_DEFAULT"
-        WS_DIR="$(expand_home "$WS_DIR")"   # expand a typed ~ (same reason as the projects folder)
-        case "$(ws_repo_state "$WS_DIR")" in
-          pull)
-            say "Updating the workspace at $WS_DIR ..."
-            if git -C "$WS_DIR" pull --ff-only </dev/null 2>/dev/null; then
-              ok "Workspace updated (fast-forward)."
-            else
-              warn "Couldn't fast-forward the workspace (local changes?). Update it yourself:"
-              say  "  git -C \"$WS_DIR\" pull"
-            fi ;;
-          occupied)
-            warn "$WS_DIR already exists and isn't the workspace repo — leaving it alone."
-            say  "  Pick another folder and re-run, or clone it manually:"
-            say  "  gh repo clone yourdoctorsonline/your-doctors-online" ;;
-          clone)
-            say "Cloning yourdoctorsonline/your-doctors-online into $WS_DIR ..."
-            if have gh && gh repo clone yourdoctorsonline/your-doctors-online "$WS_DIR" </dev/null 2>/dev/null; then
-              ok "Workspace cloned to $WS_DIR"
-            elif have git && GIT_TERMINAL_PROMPT=0 git clone https://github.com/yourdoctorsonline/your-doctors-online.git "$WS_DIR" </dev/null 2>/dev/null; then
-              ok "Workspace cloned to $WS_DIR"
-            else
-              warn "Couldn't clone the workspace (it's private — needs your GitHub access)."
-              say  "  Sign in to GitHub, then run:"
-              say  "    gh repo clone yourdoctorsonline/your-doctors-online \"$WS_DIR\""
-              say  "  (or  git clone https://github.com/yourdoctorsonline/your-doctors-online.git \"$WS_DIR\")"
-            fi ;;
-        esac ;;
+    ask AOS_DIR "Where should Agentic OS live?" "$AOS_DEFAULT"
+    AOS_DIR="$(expand_home "$AOS_DIR")"
+    AOS_OK=0
+    case "$(aos_repo_state "$AOS_DIR")" in
+    pull)
+      say "Updating Agentic OS at $AOS_DIR ..."
+      if git -C "$AOS_DIR" pull --ff-only </dev/null 2>/dev/null; then
+        ok "Agentic OS updated."; AOS_OK=1
+      else
+        warn "Couldn't fast-forward (local changes?). Update it yourself: git -C \"$AOS_DIR\" pull"
+        AOS_OK=1   # it IS installed; only the update failed
+      fi ;;
+    occupied)
+      warn "$AOS_DIR already exists and isn't this Agentic OS — leaving it alone."
+      say  "  (If it's the upstream template or someone else's fork, that's deliberate:"
+      say  "   pulling ours over it would overwrite work. Pick another folder and re-run.)" ;;
+    clone)
+      say "Cloning yourdoctorsonline/agentic-os into $AOS_DIR ..."
+      if have gh && gh repo clone yourdoctorsonline/agentic-os "$AOS_DIR" </dev/null 2>/dev/null; then
+        ok "Agentic OS installed to $AOS_DIR"; AOS_OK=1
+      elif have git && GIT_TERMINAL_PROMPT=0 git clone https://github.com/yourdoctorsonline/agentic-os.git "$AOS_DIR" </dev/null 2>/dev/null; then
+        ok "Agentic OS installed to $AOS_DIR"; AOS_OK=1
+      else
+        warn "Couldn't clone Agentic OS — it's private, so it needs your GitHub access."
+        say  "  Sign in first:   gh auth login"
+        say  "  Then re-run me, or clone it yourself:"
+        say  "    gh repo clone yourdoctorsonline/agentic-os \"$AOS_DIR\""
+        say  "  If GitHub says 'not found', ask Raihan to add you to the yourdoctorsonline org."
+      fi ;;
     esac
+
+    # ---- memory, headless (AC-YTI-005) --------------------------------------
+    # Memory is what makes Claude remember across sessions. Its engine lives in the
+    # same package as the web dashboard, so the package is installed and the setup
+    # script is run — but the dashboard server is never started and no `centre`
+    # shortcut is added. This downloads a ~400 MB model on first run and takes a few
+    # minutes; it is the slowest step in the install and it only happens once.
+    if [ "$AOS_OK" = "1" ] && [ -x "$AOS_DIR/scripts/setup-memory.sh" ]; then
+      say "Setting up memory (first run downloads ~400 MB — this is the slow part)..."
+      if ( cd "$AOS_DIR" && bash scripts/setup-memory.sh </dev/null >/dev/null 2>&1 ); then
+        ok "Memory ready (searchable, local to this Mac, no dashboard)."
+      else
+        warn "Memory setup didn't finish. Everything else still works; retry with:"
+        say  "    cd \"$AOS_DIR\" && bash scripts/setup-memory.sh"
+      fi
+    elif [ "$AOS_OK" = "1" ]; then
+      warn "Memory setup script not found in $AOS_DIR — skipping."
+    fi
+
+    # ---- import this person's OWN past Claude Code work (AC-YTI-007) ---------
+    # Report only. A real import writes summary blocks into files that are committed
+    # to git, and spans every signed-in account including personal ones, so the
+    # decision stays with the human. The report names each account and its count.
+    if [ "$AOS_OK" = "1" ] && [ -f "$AOS_DIR/command-centre/package.json" ]; then
+      say ""
+      say "Your past Claude Code work can be imported into memory. Here's what's available:"
+      ( cd "$AOS_DIR" && npm --prefix command-centre run memory:import-sessions -- \
+          --from global --dry-run </dev/null 2>/dev/null | sed -n '/Detected sources/,/^$/p' | sed 's/^/    /' ) || true
+      say "    To import, run this in $AOS_DIR:"
+      say "      npm --prefix command-centre run memory:import-sessions"
+    fi
   fi
 fi
 
@@ -1375,7 +1466,24 @@ if [ "${SETUP_RUSTDESK:-}" != "0" ] && [ "$PLATFORM" = "mac" ]; then
     rustdesk_phone_guide "${TS_IP:-}"
   else
     _RD="${SETUP_RUSTDESK:-}"
-    [ -z "$_RD" ] && ask _RD "Install RustDesk so you can remote in to this Mac from your phone? [y/N]" "N"
+    if [ -z "$_RD" ]; then
+      # Plain-language consent. RustDesk is remote CONTROL, not screen sharing: whoever
+      # holds the ID and password can drive this Mac as if sitting at it — read files,
+      # open apps, type. That has to be said in words before the prompt, not buried in
+      # a link, because the person answering may not know what "remote desktop" implies.
+      say ""
+      say "  ${C_BOLD}Before you answer:${C_RESET} RustDesk lets someone with the ID and password"
+      say "  take FULL control of this Mac from another device — move the mouse, open"
+      say "  anything, read any file you can read. It is the same access as sitting here."
+      say "  It is genuinely useful (it is how you fix your own Mac from your phone), and"
+      say "  it is entirely optional. Nothing else in this install depends on it."
+      say ""
+      say "  If you say yes: RustDesk opens and shows an ID. ${C_BOLD}Set your own permanent"
+      say "  password in it${C_RESET} — do not leave the temporary one, and do not share both"
+      say "  the ID and password with anyone you would not hand your unlocked laptop to."
+      say ""
+      ask _RD "Install RustDesk? [y/N]" "N"
+    fi
     case "$_RD" in
       1|[Yy]*)
         BREW="$(brew_bin)"
@@ -1415,6 +1523,35 @@ if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
 else
   if preset_wants "$PRESET" tools; then
     have tmux && check "tmux is installed ($(tmux -V 2>/dev/null))" 1 || check "tmux is installed" 0
+
+    # AC-YTI-016 — RUN each tool and read its exit code. A package manager reporting
+    # success does not mean the command works: it can land off PATH, install a
+    # versioned binary under another name, or (Playwright) install the library without
+    # the browser it drives. The only trustworthy answer is to execute it.
+    #
+    # On failure, name the SKILLS that stop working. "ffmpeg missing" means nothing to
+    # someone who has never heard of ffmpeg; "video skills won't run" does.
+    tool_check() {
+      # tool_check <command> <probe-args> <plain-english consequence>
+      if "$1" $2 >/dev/null 2>&1; then
+        check "$1 works" 1
+      else
+        check "$1 is NOT working — $3" 0
+      fi
+    }
+    tool_check ffmpeg  "-version"  "video skills can't run (social content, long-to-short)"
+    tool_check ffprobe "-version"  "video skills can't read clip lengths"
+    tool_check yt-dlp  "--version" "YouTube skills can't fetch anything"
+    tool_check jq      "--version" "the long-to-short pipeline can't parse its data"
+    tool_check gh      "--version" "session wrap-up can't reach GitHub"
+    tool_check node    "--version" "memory can't run at all"
+    tool_check python3 "--version" "most skill scripts can't run, and the harness gates can't fire"
+    # Playwright: the library alone is not enough — probe the BROWSER it drives.
+    if npx --yes playwright --version >/dev/null 2>&1; then
+      check "browser automation works" 1
+    else
+      check "browser automation is NOT working — 6 skills that drive a browser will fail (social content, brand voice, diagrams, image gen, visual identity, the harness)" 0
+    fi
   fi
   if preset_wants "$PRESET" signin; then
     any_creds && check "signed in to Claude" 1 || check "signed in to Claude (finish manually, then re-run)" 0

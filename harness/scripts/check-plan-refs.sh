@@ -58,7 +58,14 @@ def main():
     for line in text.splitlines():
         if not line.lstrip().startswith("|"):
             continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        # Strip backticks: `| `path/to/x.swift` | 1-40 |` is ordinary markdown, and
+        # taking the cell verbatim made the path literally "`path/to/x.swift`",
+        # which cannot exist — a hard FAIL ("revise the plan") on a plan whose
+        # references were all present and correct. Observed 2026-08-10: 8 false
+        # MISSING against 11 OK, where every one of the 8 was ALSO reported OK from
+        # its backticked-prose match on the same line. A gate that fails a correct
+        # plan teaches its reader to override gates.
+        cells = [c.strip().strip("`").strip() for c in line.strip().strip("|").split("|")]
         if not cells or "/" not in cells[0] or "." not in os.path.basename(cells[0]):
             continue
         lines = cells[1] if len(cells) > 1 and re.fullmatch(r"\d+(-\d+)?", cells[1] or "") else ""
