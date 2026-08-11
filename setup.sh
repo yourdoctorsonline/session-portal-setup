@@ -1299,6 +1299,29 @@ if preset_wants "$PRESET" portal; then
 if [ "$PLATFORM" = "mac" ]; then
   LA_DIR="$HOME/Library/LaunchAgents"
   run "creating $LA_DIR" mkdir -p "$LA_DIR"
+
+  # ---- retire legacy service names FIRST (AC-PPS-005) ------------------------
+  # Two services under DIFFERENT names can both serve the dashboard, and launchd will
+  # happily run both. The second one to start cannot bind 8090, KeepAlive restarts it,
+  # and it crash-loops forever. That is what happened on the author's Mac on
+  # 2026-07-26: the loop was stopped by disabling a plist, which left NO dashboard for
+  # two weeks. The port is fixed at 8090 by design, so the only real fix is to
+  # guarantee exactly ONE service owns it.
+  #
+  # Matched by the PROGRAM each service launches, not by label: older installs baked
+  # the installing user's own username into the label, so a name list only ever fixes
+  # the machine it was written on. Retire only AFTER the canonical pair is installed
+  # below — never leave a port unserved in between.
+  _LEGACY_FOUND=""
+  for _pl in "$LA_DIR"/*.plist; do
+    [ -f "$_pl" ] || continue
+    _lbl="$(basename "$_pl" .plist)"
+    case "$_lbl" in com.sessionlauncher.dashboard|com.sessionlauncher.terminal) continue ;; esac
+    if grep -qE 'portal-web\.py|portal\.sh' "$_pl" 2>/dev/null; then
+      _LEGACY_FOUND="$_LEGACY_FOUND $_lbl"
+    fi
+  done
+
   for label in com.sessionlauncher.terminal com.sessionlauncher.dashboard; do
     TPL="$SRC/templates/$label.plist.template"
     PLIST="$LA_DIR/$label.plist"
@@ -1325,6 +1348,27 @@ if [ "$PLATFORM" = "mac" ]; then
         || warn "Couldn't load $label — you may need to grant permission and re-run."
     fi
   done
+
+  # ---- NOW retire the legacy services (AC-PPS-005) ---------------------------
+  # Deliberately AFTER the canonical pair is installed and loaded above. Retiring
+  # first would leave the port unserved in between, and if the install then failed the
+  # machine would end up with no portal at all — worse than the duplicate we came to
+  # fix. Old plists are renamed, not deleted, so a mistake is reversible.
+  if [ -n "$(printf '%s' "${_LEGACY_FOUND:-}" | tr -d ' ')" ]; then
+    if [ "${SETUP_DRYRUN:-0}" = "1" ]; then
+      say "DRYRUN: would retire legacy portal services:$_LEGACY_FOUND"
+    else
+      for _old in $_LEGACY_FOUND; do
+        launchctl bootout "gui/$(id -u)/$_old" >/dev/null 2>&1 || true
+        mv -f "$LA_DIR/$_old.plist" "$LA_DIR/$_old.plist.retired-$(date +%Y%m%d)" 2>/dev/null || true
+        ok "Retired older portal service $_old (kept as .retired-* if you want it back)"
+      done
+      say "  Two services under different names both try to own the same port; the"
+      say "  loser restarts forever until someone disables it, and then there is no"
+      say "  portal. One service per port is the whole point."
+    fi
+  fi
+
 elif [ "$PLATFORM" = "wsl" ]; then
   SD_DIR="$HOME/.config/systemd/user"
   run "creating $SD_DIR" mkdir -p "$SD_DIR"
@@ -1444,6 +1488,35 @@ if preset_wants "$PRESET" workspace; then
       fi
     elif [ "$AOS_OK" = "1" ]; then
       warn "Memory setup script not found in $AOS_DIR — skipping."
+    fi
+
+    # ---- an EMPTY Your Doctors Online workspace (AC-YTI-021) -----------------
+    # A folder to put YDO work in, with nothing in it. Deliberately NOT a clone of
+    # yourdoctorsonline/your-doctors-online: that repo carries real business content
+    # whose privacy rules were last reviewed by a human in July, and this installer
+    # stopped depending on it on purpose. An empty shell gives somewhere obvious to
+    # work without inheriting anyone's data.
+    #
+    # Uses the OS's own scripts/add-client.sh rather than a second implementation, so
+    # the folder shape stays whatever the OS says it is, now and after any upgrade.
+    if [ "$AOS_OK" = "1" ] && [ -f "$AOS_DIR/scripts/add-client.sh" ]; then
+      if [ -d "$AOS_DIR/clients/your-doctors-online" ]; then
+        ok "YDO workspace folder already there — skipped."
+      else
+        ask _YDOWS "Create an empty Your Doctors Online workspace to work in? [Y/n]" "Y"
+        case "$_YDOWS" in
+          [Nn]*) say "  [skip] YDO workspace — make one later with: bash scripts/add-client.sh \"Your Doctors Online\"" ;;
+          *)
+            if ( cd "$AOS_DIR" && bash scripts/add-client.sh "Your Doctors Online" </dev/null >/dev/null 2>&1 ); then
+              ok "Empty YDO workspace ready at clients/your-doctors-online/"
+              say "    It has no brand files, no projects and no memory — that is deliberate."
+              say "    Open Claude Code inside it and it will offer to set the brand up."
+            else
+              warn "Couldn't create the YDO workspace. Everything else still works; retry with:"
+              say  "    cd \"$AOS_DIR\" && bash scripts/add-client.sh \"Your Doctors Online\""
+            fi ;;
+        esac
+      fi
     fi
 
     # ---- import this person's OWN past Claude Code work (AC-YTI-007) ---------

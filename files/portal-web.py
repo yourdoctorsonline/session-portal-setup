@@ -12,7 +12,7 @@ tailnet membership already means "is the owner" (never expose via `tailscale
 funnel`). Subprocess with list-args (no shell injection), 512 KB read cap.
 Terminals are served by ttyd on :7681 (this app 302-redirects to it).
 """
-import base64, html, json, os, re, socket, subprocess, sys, time, urllib.parse, uuid
+import base64, html, json, os, re, signal, socket, subprocess, sys, time, urllib.parse, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOME = os.path.expanduser("~")
@@ -1306,7 +1306,98 @@ class H(BaseHTTPRequestHandler):
         else:
             self._json({"error": "not found"}, 404)
 
+class ReusableHTTPServer(ThreadingHTTPServer):
+    """The dashboard's address is a promise, so the socket is set up to keep it.
+
+    `allow_reuse_address` lets us re-bind while the previous socket is still in
+    TIME_WAIT. Without it, restarting the service within ~60s of killing it fails with
+    "Address already in use" even though nothing is actually listening — which, under
+    launchd's KeepAlive, becomes a crash loop that looks exactly like a real conflict.
+    """
+
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def _holder_of(port):
+    """Who is holding `port`? -> list of (pid, command). Empty when free.
+
+    Uses lsof because it is the only thing on a stock macOS that maps a listening
+    socket back to a process. Best effort: if lsof is missing or fails, return [] and
+    let the bind attempt be the source of truth rather than guessing.
+    """
+    try:
+        out = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpc"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except Exception:
+        return []
+    holders, pid = [], None
+    for line in out.splitlines():
+        if line.startswith("p"):
+            pid = line[1:].strip()
+        elif line.startswith("c") and pid:
+            holders.append((pid, line[1:].strip()))
+            pid = None
+    return holders
+
+
+def claim_port(bind, port):
+    """Make port ours, or fail loudly. Never silently move to another port.
+
+    The rule the user asked for: the dashboard is always at the same address. So a busy
+    port has exactly two honest outcomes —
+      - it is a STALE COPY OF US: kill it and take the port (the common case, after an
+        unclean restart or a duplicate service);
+      - it is SOMETHING ELSE: say what, by name and pid, and exit. Picking a different
+        port would "work" while quietly breaking every saved link and phone shortcut,
+        which is worse than being down.
+    """
+    holders = _holder_of(port)
+    if not holders:
+        return
+    ours = [(pid, cmd) for pid, cmd in holders if "python" in cmd.lower()]
+    mine = str(os.getpid())
+    for pid, cmd in ours:
+        if pid == mine:
+            continue
+        # Confirm it is really our script before killing anything.
+        try:
+            argv = subprocess.run(["ps", "-o", "command=", "-p", pid],
+                                  capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            argv = ""
+        if "portal-web.py" not in argv:
+            continue
+        print(f"port {port} held by a stale dashboard (pid {pid}) — replacing it", flush=True)
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except Exception as exc:
+            print(f"  could not stop pid {pid}: {exc}", flush=True)
+        for _ in range(20):                      # up to ~5s for it to release
+            time.sleep(0.25)
+            if not _holder_of(port):
+                return
+        try:
+            os.kill(int(pid), signal.SIGKILL)    # it had its chance
+        except Exception:
+            pass
+        time.sleep(0.5)
+        if not _holder_of(port):
+            return
+    still = _holder_of(port)
+    if still:
+        who = ", ".join(f"{cmd} (pid {pid})" for pid, cmd in still)
+        print(f"REFUSING TO START: port {port} is held by {who}.", flush=True)
+        print(f"  The dashboard only ever runs on {port}, so it will not move to another"
+              f" port — that would break every saved link and phone shortcut.", flush=True)
+        print(f"  Stop that process, then this service will come back on its own.", flush=True)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     bind = TSIP if TSIP != "127.0.0.1" else "0.0.0.0"
+    claim_port(bind, PORT)
     print(f"Session Launcher web dashboard on http://{bind}:{PORT}  (tmux={TMUX}, pw={'set' if PW else 'NONE'})")
-    ThreadingHTTPServer((bind, PORT), H).serve_forever()
+    ReusableHTTPServer((bind, PORT), H).serve_forever()

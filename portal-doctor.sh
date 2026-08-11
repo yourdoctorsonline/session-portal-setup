@@ -94,6 +94,100 @@ port_open 8090 && DASH_UP=1
 [ "$TERM_UP" = 1 ] && ok "terminal answering on 7681 — $(port_owner 7681)" || bad "terminal NOT answering on port 7681"
 [ "$DASH_UP" = 1 ] && ok "dashboard answering on 8090 — $(port_owner 8090)" || bad "dashboard NOT answering on port 8090"
 
+# --- 3b. The two ways the dashboard goes missing and stays missing ----------
+# Both of these were REAL on the author's Mac (2026-07-26 to 2026-08-11, ~2 weeks
+# dark). Neither is visible from a port check alone, and neither self-heals:
+#
+#   (a) DUPLICATE SERVICES. Two launch agents under different names both run the
+#       dashboard. The second cannot bind 8090, KeepAlive restarts it, it loops.
+#       Someone eventually stops the loop by disabling one — which is (b).
+#   (b) A DISABLED PLIST. The file is renamed (…plist.disabled-YYYYMMDD) so it no
+#       longer loads at boot. The loop stops. So does the dashboard. Nothing ever
+#       says so again, because a file that is not there raises no error.
+head_ "3b. Duplicate or switched-off dashboard services"
+if [ "$PLAT" = mac ]; then
+  # Find legacy services by WHAT THEY RUN, not by name. Two reasons: hardcoding a
+  # name only catches the machine it was copied from (older installs embedded the
+  # installing user's own username in the label), and a name is a guess while the
+  # program it launches is a fact. Anything that runs portal-web.py or portal.sh and
+  # is not one of the canonical two is an older install of this same portal.
+  #
+  # A legacy service is only a DUPLICATE when its canonical replacement is actually
+  # installed. Otherwise it IS the service, and retiring it would take the port down —
+  # which is what an earlier version of this check would have done on a Mac that had
+  # the old terminal service and no new one.
+  CANON_DASH="com.sessionlauncher.dashboard"; CANON_TERM="com.sessionlauncher.terminal"
+  DUPES=""; ORPHANS=""
+  for _pl in "$AGENTS"/*.plist; do
+    [ -f "$_pl" ] || continue
+    _lbl="$(basename "$_pl" .plist)"
+    case "$_lbl" in "$CANON_DASH"|"$CANON_TERM") continue ;; esac
+    if grep -q 'portal-web\.py' "$_pl" 2>/dev/null; then
+      if [ -f "$AGENTS/$CANON_DASH.plist" ]; then DUPES="$DUPES $_lbl"; else ORPHANS="$ORPHANS $_lbl"; fi
+    elif grep -qE 'portal\.sh|ttyd' "$_pl" 2>/dev/null; then
+      if [ -f "$AGENTS/$CANON_TERM.plist" ]; then DUPES="$DUPES $_lbl"; else ORPHANS="$ORPHANS $_lbl"; fi
+    fi
+  done
+  if [ -n "$(printf '%s' "$ORPHANS" | tr -d ' ')" ]; then
+    say "  [WARN] running on an older service name:$ORPHANS"
+    say "    Working, but not the standard name, so a future install could add a second"
+    say "    one alongside it and they would fight over the port. Re-run the installer"
+    say "    to migrate — it retires the old name only after installing the new one."
+  fi
+  if [ -n "$(printf '%s' "$DUPES" | tr -d ' ')" ]; then
+    bad "an older dashboard service is still installed:$DUPES"
+    say "    Two services under different names both try to own port 8090. The loser"
+    say "    crash-loops until someone disables it, and then there is no dashboard."
+    if [ "$FIX" = 1 ]; then
+      for L in $DUPES; do
+        launchctl bootout "gui/$(id -u)/$L" >/dev/null 2>&1 || true
+        mv -f "$AGENTS/$L.plist" "$AGENTS/$L.plist.retired-$(date +%Y%m%d)" 2>/dev/null || true
+        ok "  retired $L (kept as .retired-* if you want it back)"
+      done
+    else
+      say "    Fix: re-run with --fix"
+    fi
+  else
+    ok "no duplicate dashboard services"
+  fi
+
+  if [ -n "$DISABLED" ]; then
+    bad "a dashboard service is switched OFF: $DISABLED"
+    say "    A disabled service starts nothing at boot and reports nothing when it"
+    say "    does not. This is why the dashboard can be gone for weeks unnoticed."
+    if [ "$FIX" = 1 ]; then
+      CANON="$AGENTS/com.sessionlauncher.dashboard.plist"
+      if [ -f "$CANON" ]; then
+        ok "  the canonical service exists — leaving the disabled file alone"
+      else
+        for D in $DISABLED; do
+          mv -f "$AGENTS/$D" "$CANON" 2>/dev/null && \
+            launchctl bootstrap "gui/$(id -u)" "$CANON" >/dev/null 2>&1 || \
+            launchctl load "$CANON" >/dev/null 2>&1 || true
+          ok "  re-enabled the dashboard from $D"
+          break
+        done
+      fi
+    else
+      say "    Fix: re-run with --fix"
+    fi
+  else
+    ok "no switched-off dashboard services"
+  fi
+
+  # Port 8090 held by something that is NOT the dashboard: the one case where the
+  # dashboard genuinely cannot start and no amount of restarting helps.
+  if command -v lsof >/dev/null 2>&1; then
+    HOLDER="$(lsof -nP -iTCP:8090 -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1}')"
+    HPID="$(lsof -nP -iTCP:8090 -sTCP:LISTEN -t 2>/dev/null | head -1)"
+    if [ -n "$HPID" ] && ! ps -o command= -p "$HPID" 2>/dev/null | grep -q 'portal-web.py'; then
+      bad "port 8090 is held by $HOLDER (pid $HPID), which is NOT the dashboard"
+      say "    The dashboard only ever uses 8090 — it will refuse to move rather than"
+      say "    break every saved link. Stop that process and it comes back by itself."
+    fi
+  fi
+fi
+
 head_ "4. Background services"
 svc_state() { # svc_state LABEL -> "loaded|absent" and last exit code if any
   [ "$PLAT" = mac ] || { echo "n/a"; return; }
