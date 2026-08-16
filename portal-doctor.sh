@@ -128,6 +128,20 @@ if [ "$PLAT" = mac ]; then
       if [ -f "$AGENTS/$CANON_TERM.plist" ]; then DUPES="$DUPES $_lbl"; else ORPHANS="$ORPHANS $_lbl"; fi
     fi
   done
+  # Switched-off services: a plist renamed .disabled-* loads nothing at boot and
+  # reports nothing when it does not. Found by PROGRAM, same as above, so it catches an
+  # old install whatever its label was. (This assignment went missing in an earlier
+  # rewrite while the code reading it stayed — the doctor then died on its own line 154
+  # with "DISABLED: unbound variable", i.e. the repair tool broke before it could
+  # report anything. Caught by running it, not by reading it.)
+  DISABLED=""
+  for _dp in "$AGENTS"/*.disabled* "$AGENTS"/*.plist.disabled*; do
+    [ -f "$_dp" ] || continue
+    if grep -qE 'portal-web\.py|portal\.sh|ttyd' "$_dp" 2>/dev/null; then
+      DISABLED="$DISABLED $(basename "$_dp")"
+    fi
+  done
+
   if [ -n "$(printf '%s' "$ORPHANS" | tr -d ' ')" ]; then
     say "  [WARN] running on an older service name:$ORPHANS"
     say "    Working, but not the standard name, so a future install could add a second"
